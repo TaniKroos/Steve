@@ -1,3 +1,13 @@
+// Mirrors backend/app/schemas/auth.py's UserResponse -- field names match
+// the JSON backend actually sends (snake_case), not renamed to camelCase,
+// so there's no silent mapping layer to keep in sync by hand.
+export interface CurrentUser {
+  id: string;
+  github_login: string;
+  email: string | null;
+  avatar_url: string | null;
+}
+
 export type SessionStatus = "running" | "awaiting_user" | "idle" | "done" | "starting";
 
 export interface Repo {

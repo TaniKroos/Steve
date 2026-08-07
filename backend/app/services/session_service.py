@@ -1,0 +1,83 @@
+"""
+SessionService: the orchestrator for the busiest flow in this service --
+creating a session, and forwarding follow-up messages into one that's
+already running. See flows 03 and 04 in .Arch/backend-class-map.html for
+the exact call sequence this class implements; this file is that
+sequence made real.
+
+This class is a Facade: `create_session()` hides a five-step recipe
+(check access, mint a token, persist the row, provision a sandbox, hand
+off to Agent Loop) behind one method, so the router doesn't need to know
+that recipe exists at all.
+"""
+
+import uuid
+
+from cloudagent_core.db.models import Session, User
+from cloudagent_core.github_app import GithubApp
+
+from app.clients.agent_loop_client import AgentLoopClient
+from app.exceptions import PermissionDenied
+from app.repositories.repo_repository import RepoRepository
+from app.repositories.session_repository import SessionRepository
+from app.services.sandbox_orchestrator import SandboxOrchestrator
+
+
+class SessionService:
+    def __init__(
+        self,
+        session_repo: SessionRepository,
+        repo_repo: RepoRepository,
+        sandbox_orchestrator: SandboxOrchestrator,
+        agent_loop_client: AgentLoopClient,
+        github_app: GithubApp,
+    ) -> None:
+        self._sessions = session_repo
+        self._repos = repo_repo
+        self._sandboxes = sandbox_orchestrator
+        self._agent_loop = agent_loop_client
+        self._github_app = github_app
+
+    async def create_session(self, user: User, repo_id: uuid.UUID, initial_message: str) -> Session:
+        repo = await self._repos.get(repo_id)
+        # Same exception, same eventual HTTP response, whether `repo_id`
+        # doesn't exist at all or belongs to someone else's installation
+        # -- see app/exceptions.py for why that ambiguity is intentional.
+        if repo is None or repo.installation.user_id != user.id:
+            raise PermissionDenied(f"repo {repo_id} not accessible to user {user.id}")
+
+        # Scoped to exactly this one repo (via repository_ids) so a
+        # leaked token's blast radius is one repo, not everything the
+        # installation can see. ~1hr TTL, in-memory only from here on --
+        # see Requirements/requirements.md NFR-1.
+        installation_token = await self._github_app.mint_installation_token(
+            repo.installation.installation_id, repository_ids=[repo.github_repo_id]
+        )
+
+        session = await self._sessions.create(user_id=user.id, repo_id=repo_id, initial_message=initial_message)
+        sandbox = await self._sandboxes.provision(session.id)
+
+        # From this point on, Agent Loop drives the session -- backend's
+        # job becomes "listen via SSE" (flow 05), not "drive."
+        await self._agent_loop.start_session(session.id, sandbox.e2b_sandbox_id, installation_token, initial_message)
+
+        return session
+
+    async def forward_message(self, session_id: uuid.UUID, user: User, text: str) -> None:
+        session = await self._sessions.get(session_id)
+        if session is None or session.user_id != user.id:
+            raise PermissionDenied(f"session {session_id} not accessible to user {user.id}")
+
+        # Backend persists nothing here beyond what Agent Loop itself
+        # writes once it processes this -- this method is a thin relay,
+        # not a second source of truth for message history.
+        await self._agent_loop.send_message(session_id, text)
+
+    async def list_sessions(self, user: User) -> list[Session]:
+        return await self._sessions.list_for_user(user.id)
+
+    async def get_session(self, session_id: uuid.UUID, user: User) -> Session:
+        session = await self._sessions.get(session_id)
+        if session is None or session.user_id != user.id:
+            raise PermissionDenied(f"session {session_id} not accessible to user {user.id}")
+        return session

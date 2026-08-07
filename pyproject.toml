@@ -1,0 +1,12 @@
+# Root of the uv "workspace" -- this is what lets `cloudagent_core/` and
+# `backend/` (and later `agent_loop/`) live as separate installable
+# Python packages inside one git repo, while `backend` depends on
+# `cloudagent_core` as a *real* editable dependency (not a copy-paste,
+# not a relative-path sys.path hack). Running `uv sync` from here installs
+# every workspace member and wires those dependencies up correctly.
+#
+# No [project] table here on purpose -- this makes it a "virtual"
+# workspace root (per uv's workspace docs): a pyproject.toml that exists
+# only to declare the workspace, with no installable code of its own.
+[tool.uv.workspace]
+members = ["cloudagent_core", "backend"]

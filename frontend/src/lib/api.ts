@@ -1,0 +1,57 @@
+// Thin client for talking to the backend (cloudagent-backend, :8000 in
+// local dev). Two things every call here needs, and easy to forget if
+// you write a bare `fetch` elsewhere instead of going through this file:
+//
+// 1. `credentials: "include"` -- the backend uses a signed cookie
+//    (Starlette's SessionMiddleware) to track login state, not a bearer
+//    token. Without this, the browser won't send/accept that cookie on
+//    cross-origin requests (frontend on :5173, backend on :8000), and
+//    every call will look like you're logged out even right after login.
+// 2. An absolute URL against VITE_BACKEND_URL -- relative fetches would
+//    hit the Vite dev server on :5173, not the backend.
+import type { CurrentUser } from "../types";
+
+const BASE_URL = import.meta.env.VITE_BACKEND_URL ?? "http://localhost:8000";
+
+export class ApiError extends Error {
+  // Not using TS constructor-parameter-property shorthand here -- this
+  // project's tsconfig has `erasableSyntaxOnly` on (Vite/esbuild strips
+  // types without running real TS compilation, so any TS syntax that
+  // generates actual JS, like that shorthand, isn't allowed).
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
+async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${BASE_URL}${path}`, {
+    ...init,
+    credentials: "include",
+    headers: { "Content-Type": "application/json", ...init?.headers },
+  });
+
+  if (!res.ok) {
+    // FastAPI's default error shape is `{"detail": "..."}` -- see
+    // app/exceptions.py's handlers and get_current_user's HTTPException.
+    const body = await res.json().catch(() => ({}));
+    throw new ApiError(res.status, body.detail ?? res.statusText);
+  }
+
+  // 204 No Content (e.g. logout) has no body to parse.
+  if (res.status === 204) return undefined as T;
+  return res.json() as Promise<T>;
+}
+
+export const api = {
+  // Not a fetch -- this is a real page navigation target (see
+  // LoginScreen.tsx). The browser has to actually leave the SPA, go
+  // through GitHub, and come back; you cannot do that with `fetch`.
+  loginUrl: `${BASE_URL}/api/auth/login`,
+
+  me: () => apiFetch<CurrentUser>("/api/auth/me"),
+
+  logout: () => apiFetch<void>("/api/auth/logout", { method: "POST" }),
+};

@@ -1,5 +1,5 @@
-import { Plus, Search, Settings } from "lucide-react";
-import type { Session } from "../types";
+import { LogOut, Plus, Search } from "lucide-react";
+import type { CurrentUser, Session } from "../types";
 import { Logo } from "./Logo";
 import { StatusDot } from "./StatusBadge";
 
@@ -7,11 +7,16 @@ export function Sidebar({
   sessions,
   activeId,
   onSelect,
+  user,
+  onLogout,
 }: {
   sessions: Session[];
   activeId: string;
   onSelect: (id: string) => void;
+  user: CurrentUser;
+  onLogout: () => void;
 }) {
+  const initials = user.github_login.slice(0, 2).toUpperCase();
   return (
     <aside className="flex h-screen w-[300px] shrink-0 flex-col border-r border-white/[0.06] bg-surface">
       <div className="flex items-center justify-between px-4 pb-4 pt-5">
@@ -76,15 +81,27 @@ export function Sidebar({
       </div>
 
       <div className="border-t border-white/[0.06] p-3">
-        <button className="flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-left transition hover:bg-white/[0.03]">
-          <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-zinc-700 to-zinc-800 text-[11px] font-semibold text-zinc-200 ring-1 ring-white/10">
-            TS
-          </div>
+        <button
+          onClick={onLogout}
+          title="Sign out"
+          className="group flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-left transition hover:bg-white/[0.03]"
+        >
+          {user.avatar_url ? (
+            <img
+              src={user.avatar_url}
+              alt=""
+              className="h-7 w-7 shrink-0 rounded-full ring-1 ring-white/10"
+            />
+          ) : (
+            <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-zinc-700 to-zinc-800 text-[11px] font-semibold text-zinc-200 ring-1 ring-white/10">
+              {initials}
+            </div>
+          )}
           <div className="min-w-0 flex-1">
-            <p className="truncate text-[13px] font-medium text-zinc-200">Tanish Saini</p>
-            <p className="truncate text-[11px] text-zinc-500">tanishsaini26@gmail.com</p>
+            <p className="truncate text-[13px] font-medium text-zinc-200">{user.github_login}</p>
+            <p className="truncate text-[11px] text-zinc-500">{user.email ?? "no public email"}</p>
           </div>
-          <Settings size={15} className="shrink-0 text-zinc-600" />
+          <LogOut size={15} className="shrink-0 text-zinc-600 group-hover:text-zinc-300" />
         </button>
       </div>
     </aside>

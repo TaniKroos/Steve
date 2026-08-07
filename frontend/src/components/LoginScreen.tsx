@@ -1,5 +1,7 @@
+import { useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { GitPullRequest, Sparkles, Terminal } from "lucide-react";
+import { api } from "../lib/api";
 import { GithubMark } from "./GithubMark";
 import { Logo } from "./Logo";
 
@@ -23,6 +25,19 @@ const FEATURES = [
 
 export function LoginScreen() {
   const navigate = useNavigate();
+
+  useEffect(() => {
+    // Covers landing back on "/" with an already-valid session cookie
+    // (e.g. a bookmark, or a browser-back after logging in) -- skip
+    // straight past the pitch page instead of asking for a redundant
+    // login. A 401 here just means "not logged in," which is the
+    // expected steady state for this page -- caught and discarded, not
+    // left as an unhandled rejection.
+    api
+      .me()
+      .then(() => navigate("/app", { replace: true }))
+      .catch(() => {});
+  }, [navigate]);
 
   return (
     <div className="relative min-h-screen overflow-hidden bg-canvas">
@@ -60,13 +75,21 @@ export function LoginScreen() {
             sandbox — then review the PR it opens for you.
           </p>
 
-          <button
-            onClick={() => navigate("/app")}
+          {/*
+            A real <a>, not an onClick + client-side navigate: this has
+            to be a full page load. The browser needs to actually leave
+            this SPA, go to GitHub, and come back -- see
+            backend/app/routers/auth.py for the redirect chain this
+            kicks off (/api/auth/login -> GitHub -> /api/auth/callback
+            -> back to this app's root, now with a session cookie set).
+          */}
+          <a
+            href={api.loginUrl}
             className="animate-fade-up group relative mt-10 inline-flex items-center gap-2.5 overflow-hidden rounded-xl bg-zinc-50 px-6 py-3.5 text-sm font-semibold text-zinc-900 shadow-[0_0_0_1px_rgba(255,255,255,0.08)] transition-transform duration-200 hover:scale-[1.02] active:scale-[0.98] [animation-delay:180ms]"
           >
             <GithubMark size={18} />
             Continue with GitHub
-          </button>
+          </a>
 
           <p className="animate-fade-up mt-4 text-xs text-zinc-500 [animation-delay:220ms]">
             Installs as a GitHub App with scoped, short-lived tokens — no personal access tokens, ever.

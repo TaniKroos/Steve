@@ -1,0 +1,41 @@
+# Local development infrastructure only -- this file is never deployed.
+# It exists so `backend` (and later `agent_loop`) can run against a real
+# Postgres + Redis on your laptop, matching production's shape (Fly
+# Postgres + Upstash Redis) closely enough that integration bugs show up
+# here instead of in prod. See Requirements/requirements.md NFR-13.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: cloudagent
+      POSTGRES_PASSWORD: cloudagent
+      POSTGRES_DB: cloudagent
+    ports:
+      # host:container -- connect from your machine at localhost:5432
+      - "5432:5432"
+    volumes:
+      # Named volume so your data survives `docker compose down` (but not
+      # `docker compose down -v`) -- otherwise every restart would wipe
+      # your local sessions/users tables.
+      - cloudagent_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      # `depends_on: condition: service_healthy` below waits on this, so
+      # a `docker compose up` doesn't race the app against a DB that's
+      # still booting.
+      test: ["CMD-SHELL", "pg_isready -U cloudagent"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  cloudagent_postgres_data:
