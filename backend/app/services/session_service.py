@@ -13,11 +13,12 @@ that recipe exists at all.
 
 import uuid
 
+import httpx
 from cloudagent_core.db.models import Session, User
 from cloudagent_core.github_app import GithubApp
 
 from app.clients.agent_loop_client import AgentLoopClient
-from app.exceptions import PermissionDenied
+from app.exceptions import AgentLoopUnavailable, PermissionDenied, RepoNotAccessible
 from app.repositories.repo_repository import RepoRepository
 from app.repositories.session_repository import SessionRepository
 from app.services.sandbox_orchestrator import SandboxOrchestrator
@@ -50,16 +51,49 @@ class SessionService:
         # leaked token's blast radius is one repo, not everything the
         # installation can see. ~1hr TTL, in-memory only from here on --
         # see Requirements/requirements.md NFR-1.
-        installation_token = await self._github_app.mint_installation_token(
-            repo.installation.installation_id, repository_ids=[repo.github_repo_id]
-        )
+        #
+        # This is also the point where a *stale* repo row gets caught,
+        # not just a missing/foreign one: our local row can outlive
+        # GitHub's actual grant for up to the repo-list staleness window
+        # (GithubService._REPO_SYNC_THRESHOLD), or the row may have been
+        # deliberately left in place by RepoRepository.sync_for_installation
+        # because it still has sessions against it. Either way, GitHub
+        # itself will refuse to mint a token scoped to a repo_id it no
+        # longer grants access to -- that surfaces as an HTTPStatusError
+        # here, which we turn into a clear, typed failure instead of a
+        # raw 500 from an unhandled exception deep in an httpx call.
+        try:
+            installation_token = await self._github_app.mint_installation_token(
+                repo.installation.installation_id, repository_ids=[repo.github_repo_id]
+            )
+        except httpx.HTTPStatusError as exc:
+            raise RepoNotAccessible(
+                f"{repo.owner}/{repo.name} is no longer accessible via this GitHub App installation -- "
+                "it may have been removed or access revoked. Reconnect the repo and try again."
+            ) from exc
 
         session = await self._sessions.create(user_id=user.id, repo_id=repo_id, initial_message=initial_message)
         sandbox = await self._sandboxes.provision(session.id)
 
         # From this point on, Agent Loop drives the session -- backend's
-        # job becomes "listen via SSE" (flow 05), not "drive."
-        await self._agent_loop.start_session(session.id, sandbox.e2b_sandbox_id, installation_token, initial_message)
+        # job becomes "listen via SSE" (flow 05), not "drive." Right now
+        # this call always fails -- Agent Loop doesn't exist as a running
+        # service yet -- and that's expected. What's *not* acceptable is
+        # silently leaving behind a real, billed E2B sandbox every time
+        # this is tried, so a failure here triggers best-effort cleanup
+        # before surfacing a clear, typed error instead of a raw 500 from
+        # an unhandled httpx exception.
+        try:
+            await self._agent_loop.start_session(
+                session.id, sandbox.e2b_sandbox_id, installation_token, initial_message
+            )
+        except httpx.HTTPError as exc:
+            await self._sandboxes.terminate(sandbox.id, sandbox.e2b_sandbox_id)
+            session.status = "failed"
+            raise AgentLoopUnavailable(
+                "Session created and a sandbox was provisioned, but Agent Loop isn't reachable to "
+                "actually run it -- that service doesn't exist yet. The sandbox has been torn down."
+            ) from exc
 
         return session
 

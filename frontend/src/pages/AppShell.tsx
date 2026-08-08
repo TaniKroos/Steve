@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ChatView } from "../components/ChatView";
+import { NewSessionModal } from "../components/NewSessionModal";
 import { SandboxPanel } from "../components/SandboxPanel";
 import { Sidebar } from "../components/Sidebar";
 import { api } from "../lib/api";
 import { activeSessionId, messagesBySession, sessions } from "../lib/mockData";
-import type { CurrentUser } from "../types";
+import type { CurrentUser, GithubRepo } from "../types";
 
 export function AppShell() {
   const navigate = useNavigate();
@@ -32,8 +33,19 @@ export function AppShell() {
       });
   }, [navigate]);
 
+  const [repos, setRepos] = useState<GithubRepo[]>([]);
+
+  useEffect(() => {
+    // Deliberately gated on `user` being confirmed first -- calling this
+    // before we know the cookie is valid would just race the redirect
+    // above and log a spurious 401 to the console for no benefit.
+    if (!user) return;
+    api.repos().then(setRepos).catch(() => setRepos([]));
+  }, [user]);
+
   const [selectedId, setSelectedId] = useState(activeSessionId);
   const [sandboxOpen, setSandboxOpen] = useState(true);
+  const [showNewSession, setShowNewSession] = useState(false);
   const session = sessions.find((s) => s.id === selectedId) ?? sessions[0];
   const messages = messagesBySession[selectedId] ?? [];
 
@@ -57,6 +69,8 @@ export function AppShell() {
         onSelect={setSelectedId}
         user={user}
         onLogout={handleLogout}
+        repos={repos}
+        onNewSession={() => setShowNewSession(true)}
       />
       <ChatView
         session={session}
@@ -65,6 +79,20 @@ export function AppShell() {
         onToggleSandbox={() => setSandboxOpen((o) => !o)}
       />
       {sandboxOpen && <SandboxPanel session={session} onClose={() => setSandboxOpen(false)} />}
+      {showNewSession && (
+        <NewSessionModal
+          repos={repos}
+          onClose={() => setShowNewSession(false)}
+          onCreated={() => {
+            // The mock session list/chat view below aren't wired to real
+            // session data yet -- that's a separate, bigger piece of
+            // work (real GET /api/sessions + real message history once
+            // Agent Loop exists to actually populate it). For now,
+            // success just closes the modal; nothing to show it in yet.
+            setShowNewSession(false);
+          }}
+        />
+      )}
     </div>
   );
 }

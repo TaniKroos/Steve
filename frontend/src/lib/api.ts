@@ -9,7 +9,7 @@
 //    every call will look like you're logged out even right after login.
 // 2. An absolute URL against VITE_BACKEND_URL -- relative fetches would
 //    hit the Vite dev server on :5173, not the backend.
-import type { CurrentUser } from "../types";
+import type { CurrentUser, GithubRepo, RemoteSession } from "../types";
 
 const BASE_URL = import.meta.env.VITE_BACKEND_URL ?? "http://localhost:8000";
 
@@ -51,7 +51,30 @@ export const api = {
   // through GitHub, and come back; you cannot do that with `fetch`.
   loginUrl: `${BASE_URL}/api/auth/login`,
 
+  // Same deal -- GitHub's App-install page is also a real page the
+  // browser has to visit, not something `fetch` can do. See
+  // routers/github.py's `/install`.
+  installUrl: `${BASE_URL}/api/github/install`,
+
   me: () => apiFetch<CurrentUser>("/api/auth/me"),
 
   logout: () => apiFetch<void>("/api/auth/logout", { method: "POST" }),
+
+  // May trigger a real GitHub call server-side if the installation's
+  // cache is stale (see GithubService.list_repos_for_user) -- from the
+  // frontend's point of view it's still just a GET, the staleness check
+  // is entirely the backend's concern.
+  repos: () => apiFetch<GithubRepo[]>("/api/github/repos"),
+
+  // Expect this to fail with a 503 right now, every time -- see
+  // SessionService.create_session. It's not a bug: a real sandbox does
+  // get provisioned (and torn down again on failure) before the call
+  // fails at the one deliberately-unbuilt step, handing off to Agent
+  // Loop. `ApiError.status` is how the caller tells that apart from a
+  // genuine failure -- see NewSessionModal.tsx.
+  createSession: (repoId: string, initialMessage: string) =>
+    apiFetch<RemoteSession>("/api/sessions", {
+      method: "POST",
+      body: JSON.stringify({ repo_id: repoId, initial_message: initialMessage }),
+    }),
 };

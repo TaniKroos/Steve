@@ -19,6 +19,13 @@ class InstallationRepository:
         )
         return result.scalar_one_or_none()
 
+    async def list_for_user(self, user_id: uuid.UUID) -> list[GithubInstallation]:
+        """Every installation this user owns -- GithubService walks this
+        list to decide which installations' repo caches need refreshing
+        before serving the repo-picker."""
+        result = await self._db.execute(select(GithubInstallation).where(GithubInstallation.user_id == user_id))
+        return list(result.scalars())
+
     async def upsert(
         self, *, user_id: uuid.UUID, installation_id: int, account_login: str, account_type: str
     ) -> GithubInstallation:

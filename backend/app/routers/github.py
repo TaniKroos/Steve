@@ -14,8 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
 
 from app.config import Settings, get_settings
-from app.dependencies import get_current_user, get_github_service, get_repo_repo
-from app.repositories.repo_repository import RepoRepository
+from app.dependencies import get_current_user, get_github_service
 from app.schemas.github import RepoResponse
 from app.services.github_service import GithubService
 
@@ -82,7 +81,11 @@ async def webhook(
 @router.get("/repos", response_model=list[RepoResponse])
 async def list_repos(
     user: User = Depends(get_current_user),
-    repo_repo: RepoRepository = Depends(get_repo_repo),
+    github_service: GithubService = Depends(get_github_service),
 ) -> list[RepoResponse]:
-    repos = await repo_repo.list_for_user(user.id)
+    # Routed through the service, not straight to the repository, because
+    # serving this list now involves a decision (is any installation's
+    # cache stale enough to resync first?) -- that's business logic, and
+    # belongs in GithubService.list_repos_for_user, not duplicated here.
+    repos = await github_service.list_repos_for_user(user)
     return [RepoResponse.model_validate(r) for r in repos]

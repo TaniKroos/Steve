@@ -1,5 +1,8 @@
-import { LogOut, Plus, Search } from "lucide-react";
-import type { CurrentUser, Session } from "../types";
+import { useState } from "react";
+import { ChevronRight, GitBranch, LogOut, Plus, Search } from "lucide-react";
+import { api } from "../lib/api";
+import type { CurrentUser, GithubRepo, Session } from "../types";
+import { GithubMark } from "./GithubMark";
 import { Logo } from "./Logo";
 import { StatusDot } from "./StatusBadge";
 
@@ -9,14 +12,19 @@ export function Sidebar({
   onSelect,
   user,
   onLogout,
+  repos,
+  onNewSession,
 }: {
   sessions: Session[];
   activeId: string;
   onSelect: (id: string) => void;
   user: CurrentUser;
   onLogout: () => void;
+  repos: GithubRepo[];
+  onNewSession: () => void;
 }) {
   const initials = user.github_login.slice(0, 2).toUpperCase();
+  const [reposOpen, setReposOpen] = useState(true);
   return (
     <aside className="flex h-screen w-[300px] shrink-0 flex-col border-r border-white/[0.06] bg-surface">
       <div className="flex items-center justify-between px-4 pb-4 pt-5">
@@ -24,7 +32,10 @@ export function Sidebar({
       </div>
 
       <div className="px-3">
-        <button className="group flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-br from-accent-from via-accent-via to-accent-to px-3 py-2.5 text-sm font-semibold text-white shadow-[0_4px_20px_-6px_rgba(47,111,237,0.45)] transition-transform hover:scale-[1.015] active:scale-[0.985]">
+        <button
+          onClick={onNewSession}
+          className="group flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-br from-accent-from via-accent-via to-accent-to px-3 py-2.5 text-sm font-semibold text-white shadow-[0_4px_20px_-6px_rgba(47,111,237,0.45)] transition-transform hover:scale-[1.015] active:scale-[0.985]"
+        >
           <Plus size={16} strokeWidth={2.5} />
           New session
         </button>
@@ -40,7 +51,64 @@ export function Sidebar({
         </div>
       </div>
 
-      <div className="mt-2 flex-1 overflow-y-auto px-2 py-2">
+      <div className="mt-4 px-3">
+        <div className="flex items-center justify-between px-0.5 pb-1.5">
+          {/*
+            Two separate interactive elements side by side, not one
+            nested inside the other -- an <a> inside a <button> is
+            invalid HTML and browsers handle the click target
+            inconsistently, so the toggle and the "connect" link are
+            siblings even though they sit on the same row.
+          */}
+          <button
+            onClick={() => setReposOpen((open) => !open)}
+            aria-expanded={reposOpen}
+            className="flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-600 transition hover:text-zinc-400"
+          >
+            <ChevronRight
+              size={11}
+              strokeWidth={2.5}
+              className={`shrink-0 transition-transform duration-150 ${reposOpen ? "rotate-90" : ""}`}
+            />
+            Connected repos
+            {repos.length > 0 && <span className="text-zinc-700">({repos.length})</span>}
+          </button>
+          <a
+            href={api.installUrl}
+            title="Connect a repo"
+            className="flex h-5 w-5 items-center justify-center rounded text-zinc-600 transition hover:bg-white/[0.06] hover:text-zinc-300"
+          >
+            <Plus size={13} strokeWidth={2.5} />
+          </a>
+        </div>
+        {reposOpen &&
+          (repos.length === 0 ? (
+            <a
+              href={api.installUrl}
+              className="flex items-center gap-2 rounded-lg border border-dashed border-white/[0.08] px-2.5 py-2.5 text-[12px] text-zinc-500 transition hover:border-white/[0.16] hover:text-zinc-300"
+            >
+              <GithubMark size={14} />
+              Connect a repo to get started
+            </a>
+          ) : (
+            <div className="flex max-h-[132px] flex-col gap-0.5 overflow-y-auto">
+              {repos.map((r) => (
+                <div
+                  key={r.id}
+                  className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-[12.5px] text-zinc-300"
+                >
+                  <GitBranch size={13} className="shrink-0 text-zinc-600" />
+                  <span className="truncate">
+                    {r.owner}/{r.name}
+                  </span>
+                  {r.private && <span className="ml-auto shrink-0 text-[10px] text-zinc-600">private</span>}
+                </div>
+              ))}
+            </div>
+          ))}
+      </div>
+
+      <div className="mt-4 flex-1 overflow-y-auto px-2 py-2">
         <p className="px-2.5 pb-1.5 pt-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-600">
           Sessions
         </p>

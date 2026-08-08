@@ -8,6 +8,33 @@ export interface CurrentUser {
   avatar_url: string | null;
 }
 
+// Mirrors backend/app/schemas/github.py's RepoResponse -- the real,
+// backend-connected repo shape. Kept separate from `Repo` below (which
+// is the mock-data shape used by the still-unwired session UI) so the
+// two don't get silently conflated while only part of the app is real.
+export interface GithubRepo {
+  id: string;
+  owner: string;
+  name: string;
+  default_branch: string;
+  private: boolean;
+}
+
+// Mirrors backend/app/schemas/session.py's SessionResponse. Kept
+// separate from `Session` below (the mock-data shape the still-unwired
+// chat UI uses) for the same reason as `GithubRepo` vs `Repo` above.
+export interface RemoteSession {
+  id: string;
+  repo_id: string;
+  status: string;
+  title: string | null;
+  branch_name: string | null;
+  pr_number: number | null;
+  pr_url: string | null;
+  created_at: string;
+  last_active_at: string;
+}
+
 export type SessionStatus = "running" | "awaiting_user" | "idle" | "done" | "starting";
 
 export interface Repo {

@@ -19,3 +19,21 @@ class PermissionDenied(Exception):
 class NotFound(Exception):
     """Raised when a referenced row genuinely doesn't exist (as opposed
     to existing-but-not-yours, which is PermissionDenied)."""
+
+
+class AgentLoopUnavailable(Exception):
+    """Raised when handing a freshly created session off to Agent Loop
+    fails -- currently always, since that service doesn't exist yet.
+    SessionService catches this at the network level, best-effort tears
+    down the real (billed) sandbox it just provisioned, and raises this
+    instead of letting an unhandled httpx exception surface as a raw
+    500 -- see SessionService.create_session."""
+
+
+class RepoNotAccessible(Exception):
+    """Raised when a repo exists in our DB and belongs to the right user,
+    but GitHub itself rejects a token-mint scoped to it -- meaning access
+    was revoked on GitHub's side (repo removed from the installation,
+    installation suspended, etc.) since we last synced. Distinct from
+    PermissionDenied: this isn't about who's asking, it's about the
+    repo genuinely no longer being usable right now."""

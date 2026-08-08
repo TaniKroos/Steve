@@ -29,7 +29,7 @@ translation layer or duplicated schema to keep in sync by hand.
 import uuid
 from datetime import datetime
 
-from sqlalchemy import JSON, ForeignKey, UniqueConstraint
+from sqlalchemy import JSON, DateTime, ForeignKey, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
@@ -39,7 +39,23 @@ class Base(DeclarativeBase):
     """Every mapped model below inherits from this. SQLAlchemy uses
     `Base.metadata` (which collects every subclass's table definition) as
     the thing Alembic compares the live database against when
-    autogenerating a migration."""
+    autogenerating a migration.
+
+    `type_annotation_map` overrides what a bare `Mapped[datetime]`
+    compiles to, project-wide: `DateTime(timezone=True)` instead of
+    SQLAlchemy's plain (timezone-naive) default. This exists because of a
+    real bug, not preemptively -- `SandboxOrchestrator.provision()`
+    assigns `datetime.now(timezone.utc)` (timezone-*aware*) to
+    `Sandbox.expires_at`, and without this override that column would be
+    a naive `TIMESTAMP`, which asyncpg flatly refuses to accept an aware
+    datetime for. Every `*_at` column in this file follows the same
+    convention (assigned via `datetime.now(timezone.utc)` wherever the
+    app sets one at all), so fixing it once here, for every column,
+    beats patching individual columns as each one happens to get
+    exercised for the first time.
+    """
+
+    type_annotation_map = {datetime: DateTime(timezone=True)}
 
 
 def _uuid_pk() -> Mapped[uuid.UUID]:
@@ -75,6 +91,13 @@ class GithubInstallation(Base):
     account_login: Mapped[str]
     account_type: Mapped[str]  # "User" or "Organization", verbatim from GitHub's API
     suspended_at: Mapped[datetime | None]
+    # When we last re-fetched this installation's repo list from GitHub.
+    # NULL until the first sync ever runs. GithubService checks this
+    # against a staleness threshold before deciding whether a repo-list
+    # read needs to trigger a fresh GitHub call -- see
+    # GithubService.list_repos_for_user(). Timezone-aware via
+    # `Base.type_annotation_map` (see the comment on `Base` above).
+    last_synced_at: Mapped[datetime | None]
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
     user: Mapped["User"] = relationship(back_populates="installations")

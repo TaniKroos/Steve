@@ -24,7 +24,7 @@ from redis.asyncio import Redis
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import get_settings
-from app.exceptions import NotFound, PermissionDenied
+from app.exceptions import AgentLoopUnavailable, NotFound, PermissionDenied, RepoNotAccessible
 from app.routers import auth, events, github, sessions
 
 
@@ -105,6 +105,23 @@ async def permission_denied_handler(_request: Request, _exc: PermissionDenied) -
 @app.exception_handler(NotFound)
 async def not_found_handler(_request: Request, _exc: NotFound) -> JSONResponse:
     return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"detail": "not found"})
+
+
+@app.exception_handler(RepoNotAccessible)
+async def repo_not_accessible_handler(_request: Request, exc: RepoNotAccessible) -> JSONResponse:
+    # 409 Conflict: the request is well-formed and the repo *did* exist
+    # in our records, but the current state on GitHub's side conflicts
+    # with actually being able to act on it right now -- distinct from
+    # 404 (never existed / not yours).
+    return JSONResponse(status_code=status.HTTP_409_CONFLICT, content={"detail": str(exc)})
+
+
+@app.exception_handler(AgentLoopUnavailable)
+async def agent_loop_unavailable_handler(_request: Request, exc: AgentLoopUnavailable) -> JSONResponse:
+    # 503 Service Unavailable: correct here specifically because it's a
+    # *dependency* of ours that's down, not a problem with the request
+    # itself -- the client did everything right.
+    return JSONResponse(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, content={"detail": str(exc)})
 
 
 @app.get("/healthz")
