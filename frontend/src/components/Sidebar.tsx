@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { ChevronRight, GitBranch, LogOut, Plus, Search } from "lucide-react";
 import { api } from "../lib/api";
+import { timeAgo } from "../lib/format";
 import type { CurrentUser, GithubRepo, Session } from "../types";
 import { GithubMark } from "./GithubMark";
 import { Logo } from "./Logo";
@@ -16,7 +17,7 @@ export function Sidebar({
   onNewSession,
 }: {
   sessions: Session[];
-  activeId: string;
+  activeId: string | null;
   onSelect: (id: string) => void;
   user: CurrentUser;
   onLogout: () => void;
@@ -112,6 +113,9 @@ export function Sidebar({
         <p className="px-2.5 pb-1.5 pt-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-600">
           Sessions
         </p>
+        {sessions.length === 0 && (
+          <p className="px-2.5 py-3 text-[12px] text-zinc-600">No sessions yet -- start one above.</p>
+        )}
         <div className="flex flex-col gap-0.5">
           {sessions.map((s) => {
             const active = s.id === activeId;
@@ -139,7 +143,7 @@ export function Sidebar({
                 <div className="mt-1 flex items-center gap-1.5 text-[11.5px] text-zinc-500">
                   <span className="truncate">{s.repo.name}</span>
                   <span className="text-zinc-700">·</span>
-                  <span className="shrink-0">{s.updatedAt}</span>
+                  <span className="shrink-0">{timeAgo(s.updatedAt)}</span>
                   {s.unread && <span className="ml-auto h-1.5 w-1.5 shrink-0 rounded-full bg-accent-to" />}
                 </div>
               </button>

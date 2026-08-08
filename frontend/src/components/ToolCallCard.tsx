@@ -7,20 +7,43 @@ import {
   FilePlus2,
   FileSearch,
   GitPullRequest,
+  Key,
   Loader2,
+  MessageCircle,
+  ShieldCheck,
   Terminal,
+  Timer,
+  Undo2,
   X,
 } from "lucide-react";
-import type { ToolCall, ToolName } from "../types";
+import type { ToolCall } from "../types";
 
-const TOOL_META: Record<ToolName, { icon: typeof Terminal; label: string }> = {
+// Every real tool name agent_loop/app/tools/registry.py currently
+// registers, plus a generic fallback below for any future one this
+// doesn't list yet -- `ToolName` is deliberately a plain `string` (see
+// types.ts) so a new tool never needs a frontend change to render at all,
+// just to render *well*.
+const TOOL_META: Record<string, { icon: typeof Terminal; label: string }> = {
   shell_exec: { icon: Terminal, label: "Shell" },
+  shell_view: { icon: Terminal, label: "Shell" },
+  shell_write: { icon: Terminal, label: "Shell" },
+  shell_kill: { icon: Terminal, label: "Shell" },
   open_file: { icon: FileSearch, label: "Read file" },
   str_replace: { icon: Diff, label: "Edit file" },
   create_file: { icon: FilePlus2, label: "Create file" },
+  insert_at_line: { icon: Diff, label: "Edit file" },
+  undo_edit: { icon: Undo2, label: "Undo edit" },
   git_create_pr: { icon: GitPullRequest, label: "Create PR" },
+  git_update_pr_description: { icon: GitPullRequest, label: "Update PR" },
   git_view_pr: { icon: Eye, label: "View PR" },
+  git_pr_checks: { icon: ShieldCheck, label: "CI checks" },
+  git_list_repos: { icon: Eye, label: "List repos" },
+  message_user: { icon: MessageCircle, label: "Message" },
+  wait: { icon: Timer, label: "Wait" },
+  list_secrets: { icon: Key, label: "Secrets" },
 };
+
+const DEFAULT_META = { icon: Terminal, label: "Tool" };
 
 function DetailLine({ line }: { line: string }) {
   if (line.startsWith("+") && !line.startsWith("+++")) {
@@ -37,7 +60,7 @@ function DetailLine({ line }: { line: string }) {
 
 export function ToolCallCard({ call }: { call: ToolCall }) {
   const [open, setOpen] = useState(call.status !== "success");
-  const meta = TOOL_META[call.tool];
+  const meta = TOOL_META[call.tool] ?? { ...DEFAULT_META, label: call.tool };
   const Icon = meta.icon;
 
   return (

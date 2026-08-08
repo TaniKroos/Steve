@@ -183,9 +183,19 @@ class Message(Base):
     id: Mapped[uuid.UUID] = _uuid_pk()
     session_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("sessions.id"), index=True)
     role: Mapped[str]  # "user" | "assistant" | "tool"
-    # Stored as Anthropic's raw content-block JSON (list of dicts), so
-    # replaying a session's history never needs a translation layer
-    # between "what we stored" and "what the Messages API expects".
+    # A list of provider-neutral content blocks -- NOT any single vendor's
+    # raw wire format. Each element is one of:
+    #   {"type": "text", "text": "..."}
+    #   {"type": "tool_use", "id": "...", "name": "...", "input": {...}}
+    #   {"type": "tool_result", "tool_use_id": "...", "content": "...", "is_error": bool}
+    # Both agent_loop/app/llm/anthropic_client.py and llama_client.py
+    # translate *to* this shape when persisting and *from* it when
+    # reconstructing history for the next LLM call -- see
+    # claude/agent-loop-plan.md §4.3 for why this exists: storing a
+    # single provider's native format would permanently couple this
+    # column to whichever LLM was chosen first, which stopped being an
+    # acceptable trade the moment supporting more than one provider
+    # became a real goal instead of a hypothetical.
     content: Mapped[dict] = mapped_column(JSON)
     sequence_no: Mapped[int]
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())

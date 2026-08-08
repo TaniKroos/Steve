@@ -1,11 +1,11 @@
 import type { SessionStatus } from "../types";
 
 const STATUS_CONFIG: Record<SessionStatus, { label: string; dot: string; text: string; pulse?: boolean }> = {
-  running: { label: "Working", dot: "bg-accent-to", text: "text-accent-to", pulse: true },
-  awaiting_user: { label: "Needs you", dot: "bg-amber-400", text: "text-amber-300", pulse: true },
   starting: { label: "Starting", dot: "bg-slate-400", text: "text-slate-300", pulse: true },
-  done: { label: "Done", dot: "bg-emerald-400", text: "text-emerald-300" },
+  running: { label: "Working", dot: "bg-accent-to", text: "text-accent-to", pulse: true },
+  blocked: { label: "Needs you", dot: "bg-amber-400", text: "text-amber-300", pulse: true },
   idle: { label: "Idle", dot: "bg-zinc-500", text: "text-zinc-400" },
+  failed: { label: "Failed", dot: "bg-rose-500", text: "text-rose-400" },
 };
 
 export function StatusDot({ status }: { status: SessionStatus }) {

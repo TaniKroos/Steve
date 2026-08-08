@@ -8,7 +8,7 @@ from cloudagent_core.db.models import User
 from fastapi import APIRouter, Depends, status
 
 from app.dependencies import get_current_user, get_session_service
-from app.schemas.session import MessageCreateRequest, SessionCreateRequest, SessionResponse
+from app.schemas.session import MessageCreateRequest, MessageResponse, SessionCreateRequest, SessionResponse
 from app.services.session_service import SessionService
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
@@ -41,6 +41,16 @@ async def get_session(
 ) -> SessionResponse:
     session = await service.get_session(session_id, user)
     return SessionResponse.model_validate(session)
+
+
+@router.get("/{session_id}/messages", response_model=list[MessageResponse])
+async def list_messages(
+    session_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    service: SessionService = Depends(get_session_service),
+) -> list[MessageResponse]:
+    messages = await service.get_messages(session_id, user)
+    return [MessageResponse.model_validate(m) for m in messages]
 
 
 @router.post("/{session_id}/messages", status_code=status.HTTP_202_ACCEPTED)

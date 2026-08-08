@@ -9,7 +9,7 @@
 //    every call will look like you're logged out even right after login.
 // 2. An absolute URL against VITE_BACKEND_URL -- relative fetches would
 //    hit the Vite dev server on :5173, not the backend.
-import type { CurrentUser, GithubRepo, RemoteSession } from "../types";
+import type { CurrentUser, GithubRepo, RemoteMessage, RemoteSession } from "../types";
 
 const BASE_URL = import.meta.env.VITE_BACKEND_URL ?? "http://localhost:8000";
 
@@ -66,15 +66,31 @@ export const api = {
   // is entirely the backend's concern.
   repos: () => apiFetch<GithubRepo[]>("/api/github/repos"),
 
-  // Expect this to fail with a 503 right now, every time -- see
-  // SessionService.create_session. It's not a bug: a real sandbox does
-  // get provisioned (and torn down again on failure) before the call
-  // fails at the one deliberately-unbuilt step, handing off to Agent
-  // Loop. `ApiError.status` is how the caller tells that apart from a
-  // genuine failure -- see NewSessionModal.tsx.
+  // A 503 here means Agent Loop rejected/couldn't be reached for the
+  // hand-off (SessionService.create_session tears the sandbox back down
+  // in that case) -- `ApiError.status` is how the caller tells that
+  // apart from a genuine failure -- see NewSessionModal.tsx.
   createSession: (repoId: string, initialMessage: string) =>
     apiFetch<RemoteSession>("/api/sessions", {
       method: "POST",
       body: JSON.stringify({ repo_id: repoId, initial_message: initialMessage }),
     }),
+
+  sessions: () => apiFetch<RemoteSession[]>("/api/sessions"),
+
+  session: (id: string) => apiFetch<RemoteSession>(`/api/sessions/${id}`),
+
+  messages: (id: string) => apiFetch<RemoteMessage[]>(`/api/sessions/${id}/messages`),
+
+  // 202 Accepted, no body -- see routers/sessions.py's send_message.
+  // Only meaningful while the session is actually `blocked` on a
+  // message_user(BLOCK) tool call (FR-9); Agent Loop has no running
+  // worker to deliver this to otherwise.
+  sendMessage: (id: string, text: string) =>
+    apiFetch<void>(`/api/sessions/${id}/messages`, { method: "POST", body: JSON.stringify({ text }) }),
+
+  // Not a fetch -- handed to `EventSource`, which manages the connection
+  // itself (including auto-reconnect on a transient drop). See
+  // lib/useSessionChat.ts.
+  eventsUrl: (id: string) => `${BASE_URL}/api/sessions/${id}/events`,
 };

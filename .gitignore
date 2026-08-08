@@ -1,7 +1,7 @@
 /Design
 /.claude
 /.Arch
-
+/claude
 # Python
 __pycache__/
 *.pyc

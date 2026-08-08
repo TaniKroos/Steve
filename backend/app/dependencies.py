@@ -33,6 +33,7 @@ from app.clients.github_client import GithubClient
 from app.config import Settings, get_settings
 from app.events.event_bus import EventBus
 from app.repositories.installation_repository import InstallationRepository
+from app.repositories.message_repository import MessageRepository
 from app.repositories.repo_repository import RepoRepository
 from app.repositories.sandbox_repository import SandboxRepository
 from app.repositories.session_repository import SessionRepository
@@ -90,6 +91,10 @@ def get_sandbox_repo(db: AsyncSession = Depends(get_db)) -> SandboxRepository:
     return SandboxRepository(db)
 
 
+def get_message_repo(db: AsyncSession = Depends(get_db)) -> MessageRepository:
+    return MessageRepository(db)
+
+
 # ---------------------------------------------------------------------------
 # Clients / adapters
 # ---------------------------------------------------------------------------
@@ -105,8 +110,9 @@ def get_github_client(
 def get_agent_loop_client(
     settings: Settings = Depends(get_settings),
     http: httpx.AsyncClient = Depends(get_http_client),
+    redis: Redis = Depends(get_redis),
 ) -> AgentLoopClient:
-    return AgentLoopClient(settings.agent_loop_base_url, settings.internal_shared_secret, http)
+    return AgentLoopClient(settings.agent_loop_base_url, settings.internal_shared_secret, http, redis)
 
 
 def get_event_bus(redis: Redis = Depends(get_redis)) -> EventBus:
@@ -145,13 +151,17 @@ def get_github_service(
 
 
 def get_session_service(
+    db: AsyncSession = Depends(get_db),
     session_repo: SessionRepository = Depends(get_session_repo),
     repo_repo: RepoRepository = Depends(get_repo_repo),
+    message_repo: MessageRepository = Depends(get_message_repo),
     sandbox_orchestrator: SandboxOrchestrator = Depends(get_sandbox_orchestrator),
     agent_loop_client: AgentLoopClient = Depends(get_agent_loop_client),
     github_app: GithubApp = Depends(get_github_app),
 ) -> SessionService:
-    return SessionService(session_repo, repo_repo, sandbox_orchestrator, agent_loop_client, github_app)
+    return SessionService(
+        db, session_repo, repo_repo, message_repo, sandbox_orchestrator, agent_loop_client, github_app
+    )
 
 
 # ---------------------------------------------------------------------------

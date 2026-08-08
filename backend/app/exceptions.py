@@ -37,3 +37,12 @@ class RepoNotAccessible(Exception):
     installation suspended, etc.) since we last synced. Distinct from
     PermissionDenied: this isn't about who's asking, it's about the
     repo genuinely no longer being usable right now."""
+
+
+class SessionNotActive(Exception):
+    """Raised by AgentLoopClient.send_message when Redis's ownership
+    registry (agent_loop:owner:{session_id}) has no live owner for this
+    session -- it already finished, or it's genuinely orphaned pending
+    Agent Loop's own crash-recovery sweep. Distinct from a network-level
+    AgentLoopUnavailable: Agent Loop itself may be perfectly reachable,
+    this specific session just isn't running anywhere right now."""

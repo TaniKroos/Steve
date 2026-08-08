@@ -18,7 +18,7 @@ type Tab = "browser" | "vscode";
 
 export function SandboxPanel({ session, onClose }: { session: Session; onClose: () => void }) {
   const [tab, setTab] = useState<Tab>("vscode");
-  const live = session.status === "running" || session.status === "awaiting_user";
+  const live = session.status === "running" || session.status === "blocked";
 
   return (
     <aside className="flex h-screen w-[460px] shrink-0 flex-col border-l border-white/[0.06] bg-surface">

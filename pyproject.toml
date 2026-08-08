@@ -9,4 +9,4 @@
 # workspace root (per uv's workspace docs): a pyproject.toml that exists
 # only to declare the workspace, with no installable code of its own.
 [tool.uv.workspace]
-members = ["cloudagent_core", "backend"]
+members = ["cloudagent_core", "backend", "agent_loop"]

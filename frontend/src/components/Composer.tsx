@@ -1,8 +1,29 @@
 import { useState } from "react";
-import { ArrowUp, Paperclip } from "lucide-react";
+import { ArrowUp, Loader2, Paperclip } from "lucide-react";
 
-export function Composer({ disabled }: { disabled?: boolean }) {
+export function Composer({
+  disabled,
+  placeholder,
+  onSend,
+}: {
+  disabled?: boolean;
+  placeholder?: string;
+  onSend: (text: string) => Promise<void>;
+}) {
   const [value, setValue] = useState("");
+  const [sending, setSending] = useState(false);
+
+  const submit = async () => {
+    const text = value.trim();
+    if (!text || disabled || sending) return;
+    setValue("");
+    setSending(true);
+    try {
+      await onSend(text);
+    } finally {
+      setSending(false);
+    }
+  };
 
   return (
     <div className="px-6 pb-5 pt-3">
@@ -14,16 +35,23 @@ export function Composer({ disabled }: { disabled?: boolean }) {
           <textarea
             value={value}
             onChange={(e) => setValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                void submit();
+              }
+            }}
             rows={1}
-            placeholder={disabled ? "Waiting for the agent to finish…" : "Ask the agent to fix, build, or ship something…"}
+            placeholder={placeholder ?? "Ask the agent to fix, build, or ship something…"}
             disabled={disabled}
             className="max-h-40 min-h-[26px] flex-1 resize-none bg-transparent py-1.5 text-[13.5px] text-zinc-100 placeholder:text-zinc-600 focus:outline-none disabled:opacity-50"
           />
           <button
-            disabled={!value.trim() || disabled}
+            onClick={() => void submit()}
+            disabled={!value.trim() || disabled || sending}
             className="mb-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-accent-via to-accent-to text-white transition disabled:opacity-30 disabled:grayscale enabled:hover:scale-105"
           >
-            <ArrowUp size={16} strokeWidth={2.5} />
+            {sending ? <Loader2 size={16} className="animate-spin" /> : <ArrowUp size={16} strokeWidth={2.5} />}
           </button>
         </div>
         <p className="mt-2 text-center text-[11px] text-zinc-600">

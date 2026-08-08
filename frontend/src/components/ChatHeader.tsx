@@ -20,11 +20,15 @@ export function ChatHeader({
             {session.repo.private && <Lock size={10} />}
             {session.repo.owner}/{session.repo.name}
           </span>
-          <span className="text-zinc-700">·</span>
-          <span className="flex items-center gap-1 font-mono text-[11.5px] text-zinc-400">
-            <GitBranch size={11} />
-            {session.branchName}
-          </span>
+          {session.branchName && (
+            <>
+              <span className="text-zinc-700">·</span>
+              <span className="flex items-center gap-1 font-mono text-[11.5px] text-zinc-400">
+                <GitBranch size={11} />
+                {session.branchName}
+              </span>
+            </>
+          )}
         </div>
       </div>
 
@@ -32,7 +36,8 @@ export function ChatHeader({
         {session.prUrl && (
           <a
             href={session.prUrl}
-            onClick={(e) => e.preventDefault()}
+            target="_blank"
+            rel="noreferrer"
             className="flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.03] px-3 py-1 text-xs font-medium text-zinc-300 transition hover:border-white/20 hover:text-zinc-100"
           >
             PR #{session.prNumber}

@@ -24,7 +24,7 @@ from redis.asyncio import Redis
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import get_settings
-from app.exceptions import AgentLoopUnavailable, NotFound, PermissionDenied, RepoNotAccessible
+from app.exceptions import AgentLoopUnavailable, NotFound, PermissionDenied, RepoNotAccessible, SessionNotActive
 from app.routers import auth, events, github, sessions
 
 
@@ -122,6 +122,15 @@ async def agent_loop_unavailable_handler(_request: Request, exc: AgentLoopUnavai
     # *dependency* of ours that's down, not a problem with the request
     # itself -- the client did everything right.
     return JSONResponse(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, content={"detail": str(exc)})
+
+
+@app.exception_handler(SessionNotActive)
+async def session_not_active_handler(_request: Request, exc: SessionNotActive) -> JSONResponse:
+    # 409 Conflict: the request is well-formed and the session did
+    # exist, but there's no live Agent Loop owner to actually deliver a
+    # follow-up message to right now (distinct from AgentLoopUnavailable
+    # -- Agent Loop itself may be perfectly reachable).
+    return JSONResponse(status_code=status.HTTP_409_CONFLICT, content={"detail": str(exc)})
 
 
 @app.get("/healthz")

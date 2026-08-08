@@ -27,6 +27,17 @@ This is the source of truth for *what* we're building, before diving into *how*.
 - **FR-12** — A session that finishes its work results in a pushed branch and an opened pull request on GitHub (this is the Agent Loop's job — backend's part is just the initial handoff and later showing the PR link/status once Agent Loop is built).
 - **FR-13** — Idle sessions and their sandboxes are automatically cleaned up after a timeout, so nothing runs (or costs money) forever unattended.
 
+### Agent Loop
+
+See `.claude/agent-loop-plan.md` for the full design behind these — this section is the "what," that doc is the "how."
+
+- **FR-14** — Agent Loop clones the target repo into its sandbox using the handed-off installation token immediately on session start, and scrubs the token out of any persisted config (`.git/config`) right after — it never lingers on disk.
+- **FR-15** — The agent has four tool groups available during a session: **Shell** (run commands), **Editor** (read/create/edit files), **User Interaction** (ask the user something, block/resume), and **Git/GitHub** (view/create/update PRs, check CI status) — matching `Design/Design.md`'s v1 tool scope exactly.
+- **FR-16** — The agent can run against more than one LLM provider — Anthropic's Claude and a Llama-family model via an OpenAI-compatible endpoint — selected by configuration, with no branching on provider anywhere in the loop or tool logic itself.
+- **FR-17** — When a tool call needs user input before continuing (`BLOCK`), the session pauses and resumes automatically the moment a follow-up message arrives (see FR-9), rather than ending or timing out.
+- **FR-18** — Editor-tool edits (create / replace / insert / undo) happen against the sandbox's real filesystem API, never via shell text-manipulation commands (`sed`, sh `echo`, etc.), so every edit is precise and independently diffable.
+- **FR-19** — On completing a task, the agent pushes a branch and opens a real GitHub pull request, and the session's `branch_name` / `pr_number` / `pr_url` reflect it — this is FR-12, made concrete.
+
 ### Out of scope for v1 (explicitly deferred, not forgotten)
 
 - **FR-X1** — Direct live-terminal spectation (frontend connecting straight to the sandbox) — optional stretch, not required for the core product.
@@ -54,9 +65,20 @@ This is the source of truth for *what* we're building, before diving into *how*.
 
 ### Scalability & reliability
 
-- **NFR-10** — Sized for a **10–50 user showcase**, not enterprise scale — we deliberately avoid infrastructure complexity (multi-region, HA database, workflow engines) that a showcase doesn't need.
+- **NFR-10** — Scale target is **~50 concurrent users**, not enterprise scale — but this is a real project built to a good engineering standard, not a disposable demo cutting every corner that scale would technically allow. We still avoid infrastructure that's genuinely disproportionate to 50 users (multi-region, a full workflow-engine like Temporal) — but "small scale" is not blanket justification for skipping proper design (session ownership/routing, crash recovery, clean abstractions, tests). The bar is right-sized architecture, not minimum-effort architecture.
 - **NFR-11** — Backend and Agent Loop are separate deployable services that can scale/restart independently of each other.
 - **NFR-12** — A background sweep catches sandboxes/sessions that were never cleanly torn down (crashed worker, network blip) so nothing leaks resources indefinitely.
+
+### Agent Loop
+
+See `.claude/agent-loop-plan.md` for the full design. These exist because "small scale" was explicitly ruled out as an excuse to skip proper design here (NFR-10) — Agent Loop is the one part of this system with real distributed-systems shape (multiple instances, in-flight state, a swappable external dependency), so it gets its own explicit bar.
+
+- **NFR-17** — Agent Loop can run as more than one instance simultaneously; a given session's live state belongs to exactly one instance at a time, tracked explicitly (a registry with a heartbeat) — never assumed via sticky load-balancer configuration that doesn't actually exist.
+- **NFR-18** — If the instance holding a session dies, another instance detects it and resumes that session from persisted history within a bounded time (target: under a minute) — a session is never permanently stuck because one process crashed.
+- **NFR-19** — The LLM provider lives behind one internal interface (Adapter pattern); adding or swapping a provider never requires changing `SessionWorker` or any tool's logic.
+- **NFR-20** — Stored conversation history uses a provider-neutral internal format, not any single vendor's native wire format — so it isn't permanently coupled to whichever LLM provider was chosen first.
+- **NFR-21** — A session's conversation history is kept in memory for the life of an active worker and only reloaded from the database on genuine crash-recovery — per-turn cost does not grow with how long a session has been running.
+- **NFR-22** — Large tool-call outputs can be externalized to object storage past a size threshold without a future schema migration, even though that externalization isn't built until output sizes actually justify it.
 
 ### Developer experience
 

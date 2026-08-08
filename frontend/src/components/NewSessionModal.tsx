@@ -10,7 +10,10 @@ export function NewSessionModal({
 }: {
   repos: GithubRepo[];
   onClose: () => void;
-  onCreated: (session: RemoteSession) => void;
+  // Passes the typed instruction back too -- `Session.title` has no
+  // writer yet server-side (a known, pre-existing gap), so the caller
+  // uses this to show something better than a placeholder immediately.
+  onCreated: (session: RemoteSession, initialMessage: string) => void;
 }) {
   const [repoId, setRepoId] = useState(repos[0]?.id ?? "");
   const [message, setMessage] = useState("");
@@ -22,21 +25,17 @@ export function NewSessionModal({
     setSubmitting(true);
     setError(null);
     try {
-      const session = await api.createSession(repoId, message.trim());
-      onCreated(session);
+      const trimmed = message.trim();
+      const session = await api.createSession(repoId, trimmed);
+      onCreated(session, trimmed);
     } catch (err) {
-      // A 503 here specifically means "Agent Loop isn't running" -- see
-      // SessionService.create_session and app/exceptions.py's
-      // AgentLoopUnavailable. That's an expected, known gap at this
-      // stage of the project, not a bug -- worth telling apart from a
-      // genuine failure (bad repo, network error, etc.) in the message
-      // shown here, rather than presenting both the same way.
+      // A 503 here means Agent Loop rejected or couldn't be reached for
+      // the hand-off -- see SessionService.create_session and
+      // app/exceptions.py's AgentLoopUnavailable. The sandbox that was
+      // provisioned for this attempt is already torn down by the time
+      // this error surfaces, so this isn't a leak -- just a failed attempt.
       if (err instanceof ApiError && err.status === 503) {
-        setError(
-          "Session created and a sandbox was actually provisioned on E2B, but Agent Loop " +
-            "isn't built yet, so nothing can run it. The sandbox was cleaned up automatically. " +
-            "This is expected until that service exists.",
-        );
+        setError("Agent Loop couldn't start this session (it may be down, or hit an error connecting to the sandbox). The sandbox was cleaned up automatically -- check agent_loop's logs and try again.");
       } else {
         setError(err instanceof Error ? err.message : "Something went wrong.");
       }

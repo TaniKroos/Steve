@@ -1,29 +1,29 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ChatView } from "../components/ChatView";
 import { NewSessionModal } from "../components/NewSessionModal";
 import { SandboxPanel } from "../components/SandboxPanel";
 import { Sidebar } from "../components/Sidebar";
 import { api } from "../lib/api";
-import { activeSessionId, messagesBySession, sessions } from "../lib/mockData";
-import type { CurrentUser, GithubRepo } from "../types";
+import { toUiSession } from "../lib/transform";
+import { useSessionChat } from "../lib/useSessionChat";
+import type { CurrentUser, GithubRepo, RemoteSession } from "../types";
+
+// How often the session list re-fetches while at least one session isn't
+// in a terminal-ish state -- there's no push channel for "a session's
+// status/PR fields changed" the way there is for chat content (that's
+// what the per-session SSE connection in useSessionChat is for), so a
+// short poll is the simplest thing that keeps the sidebar and header
+// honest without adding a second live channel just for this.
+const SESSION_POLL_MS = 5000;
 
 export function AppShell() {
   const navigate = useNavigate();
 
   // `undefined` = still checking, `null` = checked and not logged in.
-  // Three states rather than a boolean so the "checking" render (a blank
-  // screen, momentarily) is distinguishable from "confirmed logged out" --
-  // otherwise there'd be a flash of "logged out" UI on every real login too.
   const [user, setUser] = useState<CurrentUser | null | undefined>(undefined);
 
   useEffect(() => {
-    // This is the entire point of this effect: GitHub OAuth never touches
-    // this component directly (see routers/auth.py -- the whole exchange
-    // happens server-side before the browser ever lands here). All this
-    // page can do is ask the backend "is the cookie you just gave my
-    // browser actually valid" via /api/auth/me, using it as a real
-    // authorization check, not just a UI nicety.
     api
       .me()
       .then(setUser)
@@ -36,35 +36,73 @@ export function AppShell() {
   const [repos, setRepos] = useState<GithubRepo[]>([]);
 
   useEffect(() => {
-    // Deliberately gated on `user` being confirmed first -- calling this
-    // before we know the cookie is valid would just race the redirect
-    // above and log a spurious 401 to the console for no benefit.
     if (!user) return;
     api.repos().then(setRepos).catch(() => setRepos([]));
   }, [user]);
 
-  const [selectedId, setSelectedId] = useState(activeSessionId);
+  const [sessions, setSessions] = useState<RemoteSession[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Fallback titles for sessions created this tab session, keyed by id --
+  // see NewSessionModal's onCreated below. Not persisted anywhere; a
+  // page refresh loses it and falls back to the repo-name title instead,
+  // which is an acceptable trade for not touching the backend schema
+  // just for this.
+  const fallbackTitles = useRef<Record<string, string>>({});
+
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    api
+      .sessions()
+      .then((remote) => {
+        if (cancelled) return;
+        setSessions(remote);
+        setSelectedId((current) => current ?? remote[0]?.id ?? null);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
+
+  // Keep the list fresh -- see SESSION_POLL_MS's comment above for why
+  // this is a poll rather than another SSE connection.
+  useEffect(() => {
+    if (!user) return;
+    const hasLiveSession = sessions.some((s) => s.status === "starting" || s.status === "running" || s.status === "blocked");
+    if (!hasLiveSession) return;
+    const interval = setInterval(() => {
+      api.sessions().then(setSessions).catch(() => {});
+    }, SESSION_POLL_MS);
+    return () => clearInterval(interval);
+  }, [user, sessions]);
+
+  const patchSession = (id: string, patch: Partial<RemoteSession>) => {
+    setSessions((current) => current.map((s) => (s.id === id ? { ...s, ...patch } : s)));
+  };
+
+  const { messages, liveStatus, send } = useSessionChat(selectedId, (prUrl, prNumber) => {
+    if (selectedId) patchSession(selectedId, { pr_url: prUrl, pr_number: prNumber });
+  });
+
   const [sandboxOpen, setSandboxOpen] = useState(true);
   const [showNewSession, setShowNewSession] = useState(false);
-  const session = sessions.find((s) => s.id === selectedId) ?? sessions[0];
-  const messages = messagesBySession[selectedId] ?? [];
+
+  const uiSessions = sessions.map((s) => toUiSession(s, repos, fallbackTitles.current[s.id]));
+  const selectedSession = uiSessions.find((s) => s.id === selectedId) ?? null;
 
   const handleLogout = () => {
     api.logout().finally(() => navigate("/", { replace: true }));
   };
 
   if (!user) {
-    // Covers both "still checking" (undefined) and the brief instant
-    // before the redirect above actually navigates away (null) --
-    // deliberately not the real app UI in either case, so nothing here
-    // ever renders session data on top of an unauthenticated request.
     return <div className="flex h-screen w-screen items-center justify-center bg-canvas text-zinc-500" />;
   }
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-canvas">
       <Sidebar
-        sessions={sessions}
+        sessions={uiSessions}
         activeId={selectedId}
         onSelect={setSelectedId}
         user={user}
@@ -72,23 +110,29 @@ export function AppShell() {
         repos={repos}
         onNewSession={() => setShowNewSession(true)}
       />
-      <ChatView
-        session={session}
-        messages={messages}
-        sandboxOpen={sandboxOpen}
-        onToggleSandbox={() => setSandboxOpen((o) => !o)}
-      />
-      {sandboxOpen && <SandboxPanel session={session} onClose={() => setSandboxOpen(false)} />}
+      {selectedSession ? (
+        <ChatView
+          session={selectedSession}
+          messages={messages}
+          liveStatus={liveStatus}
+          sandboxOpen={sandboxOpen}
+          onToggleSandbox={() => setSandboxOpen((o) => !o)}
+          onSend={send}
+        />
+      ) : (
+        <div className="flex flex-1 items-center justify-center text-[13px] text-zinc-600">
+          {sessions.length === 0 ? "Start a new session to get going." : "Select a session."}
+        </div>
+      )}
+      {selectedSession && sandboxOpen && <SandboxPanel session={selectedSession} onClose={() => setSandboxOpen(false)} />}
       {showNewSession && (
         <NewSessionModal
           repos={repos}
           onClose={() => setShowNewSession(false)}
-          onCreated={() => {
-            // The mock session list/chat view below aren't wired to real
-            // session data yet -- that's a separate, bigger piece of
-            // work (real GET /api/sessions + real message history once
-            // Agent Loop exists to actually populate it). For now,
-            // success just closes the modal; nothing to show it in yet.
+          onCreated={(session, initialMessage) => {
+            fallbackTitles.current[session.id] = initialMessage.length > 60 ? `${initialMessage.slice(0, 57)}...` : initialMessage;
+            setSessions((current) => [session, ...current]);
+            setSelectedId(session.id);
             setShowNewSession(false);
           }}
         />
