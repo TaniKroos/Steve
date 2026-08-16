@@ -1,4 +1,4 @@
-import { ExternalLink, GitBranch, Lock, PanelRightClose, PanelRightOpen } from "lucide-react";
+import { ExternalLink, GitBranch, Lock, Menu, PanelRightClose, PanelRightOpen } from "lucide-react";
 import type { Session } from "../types";
 import { StatusBadge } from "./StatusBadge";
 
@@ -6,10 +6,12 @@ export function ChatHeader({
   session,
   sandboxOpen,
   onToggleSandbox,
+  onToggleSidebar,
 }: {
   session: Session;
   sandboxOpen: boolean;
   onToggleSandbox: () => void;
+  onToggleSidebar: () => void;
 }) {
   return (
     <div className="flex items-center justify-between gap-4 border-b border-white/[0.06] bg-surface/60 px-6 py-3.5">
@@ -33,6 +35,13 @@ export function ChatHeader({
       </div>
 
       <div className="flex shrink-0 items-center gap-2.5">
+        <button
+          onClick={onToggleSidebar}
+          title="Toggle sidebar"
+          className="flex h-7 w-7 items-center justify-center rounded-lg border border-white/10 bg-white/[0.03] text-zinc-500 transition hover:text-zinc-300 md:hidden"
+        >
+          <Menu size={14} />
+        </button>
         {session.prUrl && (
           <a
             href={session.prUrl}

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChevronRight, GitBranch, LogOut, Plus, Search } from "lucide-react";
+import { ChevronLeft, ChevronRight, GitBranch, LogOut, Plus, Search } from "lucide-react";
 import { api } from "../lib/api";
 import { timeAgo } from "../lib/format";
 import type { CurrentUser, GithubRepo, Session } from "../types";
@@ -15,6 +15,8 @@ export function Sidebar({
   onLogout,
   repos,
   onNewSession,
+  open,
+  onClose,
 }: {
   sessions: Session[];
   activeId: string | null;
@@ -23,13 +25,26 @@ export function Sidebar({
   onLogout: () => void;
   repos: GithubRepo[];
   onNewSession: () => void;
+  open: boolean;
+  onClose: () => void;
 }) {
   const initials = user.github_login.slice(0, 2).toUpperCase();
-  const [reposOpen, setReposOpen] = useState(true);
+  const [reposOpen, setReposOpen] = useState(false);
   return (
-    <aside className="flex h-screen w-[300px] shrink-0 flex-col border-r border-white/[0.06] bg-surface">
+    <aside
+      className={`flex h-screen w-[300px] shrink-0 flex-col border-r border-white/[0.06] bg-surface transition-transform duration-200 max-md:absolute max-md:z-30 ${
+        open ? "translate-x-0" : "max-md:-translate-x-full"
+      }`}
+    >
       <div className="flex items-center justify-between px-4 pb-4 pt-5">
         <Logo size="sm" />
+        <button
+          onClick={onClose}
+          title="Close sidebar"
+          className="flex h-8 w-8 items-center justify-center rounded-lg text-zinc-500 transition hover:bg-white/[0.06] hover:text-zinc-200 md:hidden"
+        >
+          <ChevronLeft size={18} />
+        </button>
       </div>
 
       <div className="px-3">

@@ -86,6 +86,7 @@ export function AppShell() {
   });
 
   const [sandboxOpen, setSandboxOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showNewSession, setShowNewSession] = useState(false);
 
   const uiSessions = sessions.map((s) => toUiSession(s, repos, fallbackTitles.current[s.id]));
@@ -101,14 +102,26 @@ export function AppShell() {
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-canvas">
+      {sidebarOpen && (
+        <button
+          aria-label="Close sidebar overlay"
+          className="absolute inset-0 z-20 bg-black/40 md:hidden"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
       <Sidebar
         sessions={uiSessions}
         activeId={selectedId}
-        onSelect={setSelectedId}
+        onSelect={(id) => {
+          setSelectedId(id);
+          setSidebarOpen(false);
+        }}
         user={user}
         onLogout={handleLogout}
         repos={repos}
         onNewSession={() => setShowNewSession(true)}
+        open={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
       />
       {selectedSession ? (
         <ChatView
@@ -117,6 +130,7 @@ export function AppShell() {
           liveStatus={liveStatus}
           sandboxOpen={sandboxOpen}
           onToggleSandbox={() => setSandboxOpen((o) => !o)}
+          onToggleSidebar={() => setSidebarOpen((open) => !open)}
           onSend={send}
         />
       ) : (
