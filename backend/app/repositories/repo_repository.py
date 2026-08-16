@@ -62,6 +62,15 @@ class RepoRepository:
             if existing is not None:
                 existing.default_branch = repo_data["default_branch"]
                 existing.private = repo_data["private"]
+                # A repo can migrate to a different installation -- most
+                # commonly a reinstall, which always gets a brand-new
+                # installation_id (see GithubService.list_repos_for_user's
+                # 404-skip comment). Without this, a repo whose original
+                # installation later goes dead keeps pointing at it forever,
+                # even after a live installation successfully re-synced it --
+                # and a session-create against it would then 404 minting a
+                # token, despite the repo picker showing it as available.
+                existing.installation_id = installation.id
                 saved.append(existing)
                 continue
 

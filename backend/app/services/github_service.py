@@ -4,15 +4,19 @@ install flow, and staying in sync via webhooks. See flow 02 in
 
 import hashlib
 import hmac
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
+import httpx
 from cloudagent_core.db.models import GithubInstallation, Repo, User
 from cloudagent_core.github_app import GithubApp
 
 from app.clients.github_client import GithubClient
 from app.repositories.installation_repository import InstallationRepository
 from app.repositories.repo_repository import RepoRepository
+
+logger = logging.getLogger(__name__)
 
 # How stale an installation's cached repo list is allowed to get before a
 # repo-list read triggers a real GitHub call to refresh it. Read-triggered
@@ -74,8 +78,28 @@ class GithubService:
                 installation.last_synced_at is None
                 or now - installation.last_synced_at > _REPO_SYNC_THRESHOLD
             )
-            if is_stale:
+            if not is_stale:
+                continue
+            try:
                 await self._sync_installation_repos(installation)
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code != 404:
+                    raise
+                # The installation no longer exists on GitHub's side. Most
+                # commonly this is a reinstall: GitHub always assigns a
+                # brand-new installation_id, and InstallationRepository.upsert
+                # can only match an existing row by that id, so a reinstall
+                # always creates a *new* row rather than reviving the old
+                # (now-dead) one -- this is the read-path equivalent of the
+                # "installation deleted" webhook case handle_webhook_event
+                # doesn't fully cover yet. One dead installation shouldn't
+                # break the repo list for every other installation this user
+                # has, so skip it and keep going rather than letting the
+                # exception propagate out of the whole request.
+                logger.warning(
+                    "installation %s no longer exists on GitHub (404) -- skipping", installation.installation_id
+                )
+                continue
 
         return await self._repos.list_for_user(user.id)
 

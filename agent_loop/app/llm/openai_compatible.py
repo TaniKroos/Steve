@@ -79,12 +79,23 @@ class OpenAICompatibleClient(LLMPort):
     `super().__init__(client, model, max_tokens)`. `model` is whatever
     string the concrete client needs in the `model=` field of
     `chat.completions.create()` -- a model name for generic OpenAI-compatible
-    hosts, a deployment name for Azure."""
+    hosts, a deployment name for Azure.
 
-    def __init__(self, client, model: str, max_tokens: int) -> None:
+    `max_tokens_param` exists because OpenAI's newer/reasoning-family
+    models (and some Azure deployments of them, confirmed against a real
+    400 in testing: "'max_tokens' is not supported with this model. Use
+    'max_completion_tokens' instead") reject the classic `max_tokens`
+    field on Chat Completions entirely. Groq/Together/Ollama-style hosts
+    still expect the classic name, so this defaults to it and only the
+    Azure adapter overrides it -- a per-provider default, not a
+    per-request guess, since which field a given deployment wants
+    doesn't change between calls."""
+
+    def __init__(self, client, model: str, max_tokens: int, max_tokens_param: str = "max_tokens") -> None:
         self._client = client
         self._model = model
         self._max_tokens = max_tokens
+        self._max_tokens_param = max_tokens_param
 
     async def stream(
         self,
@@ -110,12 +121,22 @@ class OpenAICompatibleClient(LLMPort):
             try:
                 response = await self._client.chat.completions.create(
                     model=self._model,
-                    max_tokens=self._max_tokens,
                     messages=openai_messages,
                     tools=openai_tools,
                     stream=True,
+                    **{self._max_tokens_param: self._max_tokens},
                 )
                 async for chunk in response:
+                    if not chunk.choices:
+                        # Azure sends at least one stream chunk with an
+                        # empty `choices` array -- typically a
+                        # content-filter-metadata-only chunk that precedes
+                        # the real content, confirmed against a real
+                        # `IndexError` on `chunk.choices[0]` in testing.
+                        # Groq/Together/Ollama don't appear to do this, but
+                        # skipping empty-choices chunks is harmless for
+                        # them too -- there's nothing to extract either way.
+                        continue
                     choice = chunk.choices[0]
                     delta = choice.delta
 

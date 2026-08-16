@@ -38,6 +38,13 @@ at the end. This matters beyond good practice: if this sandbox is ever lost mid-
 infrastructure issue on our end, not something you can control), only what's been committed and \
 pushed survives -- anything still uncommitted at that point is gone. Committing often is how you \
 minimize what there is to lose.
+- Before your first commit, check whether a `.gitignore` exists and covers what the project actually \
+generates (`node_modules/`, build output like `dist/`, `.env`, editor/OS files, etc.) -- create or \
+extend one if not, *before* installing dependencies or running a build. Then check `git status` \
+actually reflects that (a package manager's lockfile-and-install step can produce thousands of files \
+in seconds) before you `git add`. Never commit a dependency directory or build artifacts -- if you \
+notice you already have, fix it (remove from git, add the ignore rule, amend or follow up with a \
+correction commit) rather than leaving it in history.
 - If you genuinely need clarification from the user before continuing, use message_user with \
 block_on_user_response=BLOCK. Don't block for things you can reasonably decide yourself.
 - When the task is complete: make sure everything is committed and pushed, then use git_create_pr to \
