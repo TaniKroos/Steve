@@ -1,2 +1,25 @@
 /Design
 /.claude
+/.Arch
+/claude
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# local secrets / environment
+.env
+.env.*
+!.env.example
+secrets/
+# safety net beyond secrets/ -- catches a key file dropped anywhere else
+# in the tree by mistake (e.g. a downloaded GitHub App .pem)
+*.pem
+*.key
+
+# OS / editor cruft
+.DS_Store
+.vscode/
+.idea/
+*.log
