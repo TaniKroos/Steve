@@ -63,13 +63,32 @@ class GithubClient:
         """Called with an *installation* token (minted via
         cloudagent_core.github_app.GithubApp), not a user token -- this is
         what lets us list exactly the repos the App was granted, right
-        after the install callback fires."""
-        response = await self._http.get(
-            f"{_GITHUB_API_BASE}/installation/repositories",
-            headers={
-                "Authorization": f"Bearer {installation_token}",
-                "Accept": "application/vnd.github+json",
-            },
-        )
-        response.raise_for_status()
-        return response.json()["repositories"]
+        after the install callback fires.
+
+        Paginated: `/installation/repositories` returns at most 100 repos
+        per page (30 by default, which is why this was silently dropping
+        anything past the first page before -- a real bug, not a
+        hypothetical one, found because a newly-added repo just didn't
+        show up). GitHub doesn't guarantee recency ordering on this
+        endpoint either, so a repo missing from page 1 isn't necessarily
+        "old" -- keep requesting pages until one comes back with fewer
+        than `per_page` results, which is the last page.
+        """
+        repos: list[dict] = []
+        page = 1
+        while True:
+            response = await self._http.get(
+                f"{_GITHUB_API_BASE}/installation/repositories",
+                headers={
+                    "Authorization": f"Bearer {installation_token}",
+                    "Accept": "application/vnd.github+json",
+                },
+                params={"per_page": 100, "page": page},
+            )
+            response.raise_for_status()
+            page_repos = response.json()["repositories"]
+            repos.extend(page_repos)
+            if len(page_repos) < 100:
+                break
+            page += 1
+        return repos
