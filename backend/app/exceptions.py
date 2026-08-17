@@ -46,3 +46,23 @@ class SessionNotActive(Exception):
     Agent Loop's own crash-recovery sweep. Distinct from a network-level
     AgentLoopUnavailable: Agent Loop itself may be perfectly reachable,
     this specific session just isn't running anywhere right now."""
+
+
+class FileNotFoundOnSandbox(Exception):
+    """Raised by AgentLoopClient.read_file when the requested path
+    doesn't exist in the sandbox's current working tree -- surfaced as a
+    plain 404, not a 502/500: the request itself was fine, the path just
+    isn't there right now (deleted, renamed, or never existed). See
+    claude/live-workspace-view-plan.md §3."""
+
+
+class GithubUnavailable(Exception):
+    """Raised by AuthService.handle_oauth_callback when GitHub's own API
+    fails mid-login (a transient 5xx, rate limiting, or a network-level
+    failure) -- not a bug in our request, GitHub's side just wasn't able
+    to answer right now. Distinct from every other exception in this file
+    in one way: the route that raises it (auth.py's /callback) is a
+    top-level browser navigation, not an XHR call from the SPA, so it's
+    caught and turned into a redirect back to the frontend with an error
+    indicator instead of a JSON body -- a raw JSON response would just
+    render as plain text in the browser for a navigation like this one."""

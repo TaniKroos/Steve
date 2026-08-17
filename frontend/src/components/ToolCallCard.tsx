@@ -17,6 +17,7 @@ import {
   X,
 } from "lucide-react";
 import type { ToolCall } from "../types";
+import { DiffLines } from "./DiffLines";
 
 // Every real tool name agent_loop/app/tools/registry.py currently
 // registers, plus a generic fallback below for any future one this
@@ -44,19 +45,6 @@ const TOOL_META: Record<string, { icon: typeof Terminal; label: string }> = {
 };
 
 const DEFAULT_META = { icon: Terminal, label: "Tool" };
-
-function DetailLine({ line }: { line: string }) {
-  if (line.startsWith("+") && !line.startsWith("+++")) {
-    return <div className="bg-emerald-500/[0.08] px-3 text-emerald-300/90">{line}</div>;
-  }
-  if (line.startsWith("-") && !line.startsWith("---")) {
-    return <div className="bg-rose-500/[0.08] px-3 text-rose-300/90">{line}</div>;
-  }
-  if (line.startsWith("FAILED") || line.toLowerCase().includes("error")) {
-    return <div className="px-3 text-rose-300/90">{line}</div>;
-  }
-  return <div className="px-3 text-zinc-400">{line || " "}</div>;
-}
 
 export function ToolCallCard({ call }: { call: ToolCall }) {
   const [open, setOpen] = useState(call.status !== "success");
@@ -92,9 +80,7 @@ export function ToolCallCard({ call }: { call: ToolCall }) {
       {open && call.detail && (
         <div className="border-t border-white/[0.06] bg-black/30">
           <pre className="max-h-56 overflow-auto py-2.5 font-mono text-[12px] leading-relaxed">
-            {call.detail.split("\n").map((line, i) => (
-              <DetailLine key={i} line={line} />
-            ))}
+            <DiffLines text={call.detail} />
           </pre>
         </div>
       )}

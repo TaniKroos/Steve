@@ -24,21 +24,26 @@ class MessageUserTool(Tool):
     name = "message_user"
     description = (
         "Send a message to the user. Set block_on_user_response to BLOCK when you need their reply before "
-        "continuing (e.g. a clarifying question), or NONE for a plain status update that doesn't require one."
+        "continuing (e.g. a clarifying question, or asking sign-off before opening a PR), NONE for a plain "
+        "status update that doesn't require one and you'll keep working, or DONE when the session is "
+        "genuinely finished (the user has confirmed there's nothing more to do, or the task never needed any "
+        "changes) and it's safe to close -- this is the only way to end a session; never just stop responding."
     )
     parameters = {
         "type": "object",
         "properties": {
             "text": {"type": "string"},
-            "block_on_user_response": {"type": "string", "enum": ["BLOCK", "NONE"]},
+            "block_on_user_response": {"type": "string", "enum": ["BLOCK", "NONE", "DONE"]},
         },
         "required": ["text", "block_on_user_response"],
     }
 
     async def execute(self, tool_use_id: str, input: dict, context: ToolContext) -> ToolResult:
-        blocked = input["block_on_user_response"] == "BLOCK"
+        response_mode = input["block_on_user_response"]
+        blocked = response_mode == "BLOCK"
+        done = response_mode == "DONE"
         content = "waiting for the user's reply..." if blocked else "message sent"
-        return ToolResult(tool_use_id=tool_use_id, content=content, blocked=blocked)
+        return ToolResult(tool_use_id=tool_use_id, content=content, blocked=blocked, done=done)
 
 
 class WaitTool(Tool):

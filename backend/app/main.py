@@ -24,7 +24,14 @@ from redis.asyncio import Redis
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import get_settings
-from app.exceptions import AgentLoopUnavailable, NotFound, PermissionDenied, RepoNotAccessible, SessionNotActive
+from app.exceptions import (
+    AgentLoopUnavailable,
+    FileNotFoundOnSandbox,
+    NotFound,
+    PermissionDenied,
+    RepoNotAccessible,
+    SessionNotActive,
+)
 from app.routers import auth, events, github, sessions
 
 
@@ -129,8 +136,15 @@ async def session_not_active_handler(_request: Request, exc: SessionNotActive) -
     # 409 Conflict: the request is well-formed and the session did
     # exist, but there's no live Agent Loop owner to actually deliver a
     # follow-up message to right now (distinct from AgentLoopUnavailable
-    # -- Agent Loop itself may be perfectly reachable).
+    # -- Agent Loop itself may be perfectly reachable). Also what a live
+    # workspace view read (files/diff) gets back when there's no live
+    # owner to ask -- see claude/live-workspace-view-plan.md §7.
     return JSONResponse(status_code=status.HTTP_409_CONFLICT, content={"detail": str(exc)})
+
+
+@app.exception_handler(FileNotFoundOnSandbox)
+async def file_not_found_handler(_request: Request, exc: FileNotFoundOnSandbox) -> JSONResponse:
+    return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"detail": str(exc)})
 
 
 @app.get("/healthz")

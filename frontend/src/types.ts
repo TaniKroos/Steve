@@ -123,6 +123,28 @@ export type SessionEvent =
   | { type: "text_delta"; text: string }
   | { type: "tool_call"; id: string; tool: string; status: ToolCallStatus; summary: string }
   | { type: "shell_output"; shell_id: string | null; stream: "stdout" | "stderr"; chunk: string }
+  | { type: "file_edit"; path: string; tool: string }
   | { type: "message_complete" }
   | { type: "status"; text: string }
   | { type: "done"; pr_url: string; pr_number: number };
+
+// --- Live workspace view (claude/live-workspace-view-plan.md) ---
+
+// One `file_edit` SSE event, kept around client-side as a lightweight
+// activity log -- never carries diff content itself (see the plan's §3.1
+// for why that's pulled on demand instead), just enough to badge the
+// file tree and know which open file to silently refresh.
+export interface FileEditEntry {
+  path: string;
+  tool: string;
+  at: number; // Date.now(), for React state identity / ordering only
+}
+
+// One `shell_output` chunk, kept for the Terminal tab's own buffer --
+// separate from ToolCallCard's accumulation of the same events into a
+// chat bubble's `detail` string; this is the raw, whole-session-so-far
+// stream the Terminal tab renders.
+export interface TerminalLine {
+  stream: "stdout" | "stderr";
+  chunk: string;
+}

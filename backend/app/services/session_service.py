@@ -148,3 +148,27 @@ class SessionService:
         # by guessing/enumerating a UUID.
         await self.get_session(session_id, user)
         return await self._messages.list_for_session(session_id)
+
+    # ------------------------------------------------------------------
+    # Live workspace view (claude/live-workspace-view-plan.md §2/§3) --
+    # thin pull-only proxies to whichever Agent Loop instance owns the
+    # session, same ownership check as every other per-session read
+    # above. `AgentLoopClient` raises `SessionNotActive` (-> 409) if
+    # there's no live owner to ask right now.
+    # ------------------------------------------------------------------
+
+    async def list_files(self, session_id: uuid.UUID, user: User) -> list[str]:
+        await self.get_session(session_id, user)
+        return await self._agent_loop.list_files(session_id)
+
+    async def read_file(self, session_id: uuid.UUID, user: User, path: str) -> str:
+        await self.get_session(session_id, user)
+        return await self._agent_loop.read_file(session_id, path)
+
+    async def file_diff(self, session_id: uuid.UUID, user: User, path: str) -> str:
+        await self.get_session(session_id, user)
+        return await self._agent_loop.file_diff(session_id, path)
+
+    async def cumulative_diff(self, session_id: uuid.UUID, user: User) -> str:
+        await self.get_session(session_id, user)
+        return await self._agent_loop.cumulative_diff(session_id)

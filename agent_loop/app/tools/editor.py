@@ -12,6 +12,8 @@ resume happens *and* someone tries to undo something from before the
 crash -- narrow enough not to warrant a DB table).
 """
 
+import shlex
+
 from e2b import FileNotFoundException
 
 from app.tools.base import Tool, ToolContext, ToolResult
@@ -101,7 +103,14 @@ class StrReplaceTool(Tool):
 
         self._undo_stack.push(path, content)
         await context.sandbox.write_file(path, content.replace(old_str, new_str, 1))
-        return ToolResult(tool_use_id=tool_use_id, content=f"replaced 1 occurrence in {path}")
+        # `output`'s `path` (the model-given, repo-relative form -- not
+        # the resolved absolute `path` above) is what SessionWorker._dispatch
+        # reads to publish the lightweight `file_edit` SSE notification and
+        # is exactly the form `git diff -- <path>` / `git ls-files` expect,
+        # since both run with cwd=repo_dir. See claude/live-workspace-view-plan.md §3.1.
+        return ToolResult(
+            tool_use_id=tool_use_id, content=f"replaced 1 occurrence in {path}", output={"path": input["path"]}
+        )
 
 
 class CreateFileTool(Tool):
@@ -123,12 +132,25 @@ class CreateFileTool(Tool):
         # or overwrote one.
         try:
             previous = await context.sandbox.read_file(path)
+            is_new_file = False
         except FileNotFoundException:
             previous = ""
+            is_new_file = True
         self._undo_stack.push(path, previous)
 
         await context.sandbox.write_file(path, input["content"])
-        return ToolResult(tool_use_id=tool_use_id, content=f"wrote {path}")
+
+        if is_new_file:
+            # `git add --intent-to-add`: makes git aware of the path
+            # without staging real content, so a later `git diff -- path`
+            # (pulled on demand, never pushed -- see
+            # claude/live-workspace-view-plan.md §3.1) shows it as a clean
+            # all-added-lines diff instead of not showing it at all --
+            # plain `git diff` is blind to untracked files. Doesn't affect
+            # the model's own later real `git add`/`git commit`.
+            await context.sandbox.run_command(f"git add -N -- {shlex.quote(input['path'])}", cwd=context.repo_dir)
+
+        return ToolResult(tool_use_id=tool_use_id, content=f"wrote {path}", output={"path": input["path"]})
 
 
 class InsertAtLineTool(Tool):
@@ -154,7 +176,9 @@ class InsertAtLineTool(Tool):
         lines = content.split("\n")
         lines.insert(line - 1, insert_content)
         await context.sandbox.write_file(path, "\n".join(lines))
-        return ToolResult(tool_use_id=tool_use_id, content=f"inserted at line {line} in {path}")
+        return ToolResult(
+            tool_use_id=tool_use_id, content=f"inserted at line {line} in {path}", output={"path": input["path"]}
+        )
 
 
 class UndoEditTool(Tool):
@@ -171,7 +195,7 @@ class UndoEditTool(Tool):
         if previous is None:
             return ToolResult(tool_use_id=tool_use_id, content=f"nothing to undo for {path}", is_error=True)
         await context.sandbox.write_file(path, previous)
-        return ToolResult(tool_use_id=tool_use_id, content=f"reverted {path}")
+        return ToolResult(tool_use_id=tool_use_id, content=f"reverted {path}", output={"path": input["path"]})
 
 
 def build_editor_tools() -> list[Tool]:

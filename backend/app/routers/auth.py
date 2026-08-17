@@ -18,11 +18,12 @@ import secrets
 from urllib.parse import urlencode
 
 from cloudagent_core.db.models import User
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, Request, Response, status
 from fastapi.responses import RedirectResponse
 
 from app.config import Settings, get_settings
 from app.dependencies import get_auth_service, get_current_user
+from app.exceptions import GithubUnavailable
 from app.schemas.auth import UserResponse
 from app.services.auth_service import AuthService
 
@@ -62,11 +63,21 @@ async def callback(
     settings: Settings = Depends(get_settings),
     auth_service: AuthService = Depends(get_auth_service),
 ) -> RedirectResponse:
+    # This whole route is a top-level browser navigation (GitHub
+    # redirects the browser straight here, per this module's docstring),
+    # never something the SPA calls via fetch -- so every failure path
+    # below redirects back to the frontend with an `?error=` code for
+    # LoginScreen to render as a real page instead of raising an
+    # HTTPException, which would just show a raw JSON body in the
+    # browser for a navigation like this.
     expected_state = request.session.pop("oauth_state", None)
     if expected_state is None or not secrets.compare_digest(state, expected_state):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid oauth state")
+        return RedirectResponse(f"{settings.frontend_base_url}/?error=invalid_state")
 
-    user = await auth_service.handle_oauth_callback(code)
+    try:
+        user = await auth_service.handle_oauth_callback(code)
+    except GithubUnavailable:
+        return RedirectResponse(f"{settings.frontend_base_url}/?error=github_unavailable")
 
     # This is the entire "you are logged in" mechanism -- a value in the
     # signed session cookie. See dependencies.get_current_user for the

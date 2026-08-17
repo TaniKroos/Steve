@@ -44,11 +44,22 @@ class SandboxOrchestrator:
         e2b_sandbox = await AsyncSandbox.create(template=self._template, api_key=self._e2b_api_key)
         expires_at = datetime.now(timezone.utc) + _SANDBOX_MAX_LIFETIME
 
-        return await self._sandboxes.create(
-            session_id=session_id,
-            e2b_sandbox_id=e2b_sandbox.sandbox_id,
-            expires_at=expires_at,
-        )
+        try:
+            return await self._sandboxes.create(
+                session_id=session_id,
+                e2b_sandbox_id=e2b_sandbox.sandbox_id,
+                expires_at=expires_at,
+            )
+        except Exception:
+            # The E2B sandbox is real and billed the moment `create()`
+            # above returns -- if persisting our own record of it fails,
+            # nothing else (not the idle-sweep job, not explicit
+            # teardown) will ever find it to kill it, since nothing
+            # references it. Mirrors the cleanup pattern
+            # SessionService.create_session already uses for the
+            # agent_loop handoff failure a few lines later.
+            await AsyncSandbox.kill(e2b_sandbox.sandbox_id, api_key=self._e2b_api_key)
+            raise
 
     async def terminate(self, sandbox_id: uuid.UUID, e2b_sandbox_id: str) -> None:
         """Used by the (not-yet-wired-up) idle-sweep background task, and

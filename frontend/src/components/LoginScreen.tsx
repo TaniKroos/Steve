@@ -1,9 +1,19 @@
 import { useEffect } from "react";
-import { useNavigate } from "react-router-dom";
-import { GitPullRequest, Sparkles, Terminal } from "lucide-react";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { AlertTriangle, GitPullRequest, Sparkles, Terminal } from "lucide-react";
 import { api } from "../lib/api";
 import { GithubMark } from "./GithubMark";
 import { Logo } from "./Logo";
+
+// Keyed off the `?error=` code backend/app/routers/auth.py's /callback
+// redirects back with on a failed login -- a top-level browser
+// navigation, so it can't just return a JSON error body the way the
+// SPA's own fetch calls do (see that file's docstring). Unknown/missing
+// codes fall through to a generic message rather than showing nothing.
+const ERROR_MESSAGES: Record<string, string> = {
+  github_unavailable: "GitHub's API didn't respond just now. This is usually temporary -- try again in a moment.",
+  invalid_state: "That login attempt expired or looked invalid. Please try again.",
+};
 
 const FEATURES = [
   {
@@ -25,6 +35,9 @@ const FEATURES = [
 
 export function LoginScreen() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const errorCode = searchParams.get("error");
+  const errorMessage = errorCode ? (ERROR_MESSAGES[errorCode] ?? "Something went wrong signing you in. Please try again.") : null;
 
   useEffect(() => {
     // Covers landing back on "/" with an already-valid session cookie
@@ -32,12 +45,23 @@ export function LoginScreen() {
     // straight past the pitch page instead of asking for a redundant
     // login. A 401 here just means "not logged in," which is the
     // expected steady state for this page -- caught and discarded, not
-    // left as an unhandled rejection.
+    // left as an unhandled rejection. Skipped entirely when there's an
+    // error to show -- a failed callback can still leave a stale-but-401
+    // session state, and silently redirecting past the error the user
+    // just landed here to see would be worse than the redundant check.
+    if (errorCode) return;
     api
       .me()
       .then(() => navigate("/app", { replace: true }))
       .catch(() => {});
-  }, [navigate]);
+  }, [navigate, errorCode]);
+
+  // Strip `?error=...` from the URL once it's been read into state, so
+  // refreshing the page (or sharing the link) doesn't keep re-showing a
+  // login failure that's already been dealt with.
+  useEffect(() => {
+    if (errorCode) setSearchParams({}, { replace: true });
+  }, [errorCode, setSearchParams]);
 
   return (
     <div className="relative min-h-screen overflow-hidden bg-canvas">
@@ -74,6 +98,13 @@ export function LoginScreen() {
             Connect a repo, describe what needs to change, and let an agent fix it inside its own
             sandbox — then review the PR it opens for you.
           </p>
+
+          {errorMessage && (
+            <div className="animate-fade-up mt-6 flex max-w-md items-start gap-2.5 rounded-xl border border-rose-500/20 bg-rose-500/[0.08] px-4 py-3 text-left text-[13px] text-rose-200">
+              <AlertTriangle size={15} className="mt-0.5 shrink-0 text-rose-400" />
+              <span>{errorMessage}</span>
+            </div>
+          )}
 
           {/*
             A real <a>, not an onClick + client-side navigate: this has

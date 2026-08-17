@@ -133,6 +133,13 @@ async def run_owned_session(
         worker_registry.unregister(session_id)
         await ownership.release_session(session_id)
         await ownership.decrement_load()
+        # `worker.run()` returning at all -- success, RecoveryExhausted,
+        # or any other terminal exception -- means this session has no
+        # live path back to being resumed (no idle-session-resume today,
+        # see claude/live-workspace-view-plan.md §5), so its sandbox is
+        # genuinely done. Closes a real, previously-unwired gap: nothing
+        # else in this codebase ever called kill_sandbox().
+        await worker.teardown_sandbox()
 
 
 async def _renew_loop(ownership: OwnershipRegistry, session_id: uuid.UUID) -> None:

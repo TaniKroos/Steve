@@ -25,7 +25,7 @@ import uuid
 import httpx
 from redis.asyncio import Redis
 
-from app.exceptions import SessionNotActive
+from app.exceptions import FileNotFoundOnSandbox, SessionNotActive
 
 _INSTANCES_KEY = "agent_loop:instances"
 
@@ -110,10 +110,11 @@ class AgentLoopClient:
         )
         response.raise_for_status()
 
-    async def send_message(self, session_id: uuid.UUID, text: str) -> None:
-        """Resume a session that's paused on a `BLOCK` tool call (a
-        follow-up message from the user). Routed directly to the
-        instance that actually owns this session right now -- see flow 04."""
+    async def _owner_base_url(self, session_id: uuid.UUID) -> str:
+        """Shared by `send_message` and every live-workspace-view read
+        method below -- all of them need the same "which instance
+        actually owns this session right now" resolution, just with
+        different verbs/paths past it."""
         owner_id = _decode(await self._redis.get(_session_owner_key(session_id)))
         if owner_id is None:
             raise SessionNotActive(f"session {session_id} has no active Agent Loop owner right now")
@@ -121,10 +122,62 @@ class AgentLoopClient:
         heartbeat = _decode(await self._redis.get(_instance_heartbeat_key(owner_id)))
         if heartbeat is None:
             raise SessionNotActive(f"session {session_id}'s owning instance is no longer live")
+        return heartbeat.rstrip("/")
 
+    async def send_message(self, session_id: uuid.UUID, text: str) -> None:
+        """Resume a session that's paused on a `BLOCK` tool call (a
+        follow-up message from the user). Routed directly to the
+        instance that actually owns this session right now -- see flow 04."""
+        base_url = await self._owner_base_url(session_id)
         response = await self._http.post(
-            f"{heartbeat.rstrip('/')}/internal/sessions/{session_id}/messages",
+            f"{base_url}/internal/sessions/{session_id}/messages",
             json={"text": text},
             headers={"X-Internal-Secret": self._secret},
         )
         response.raise_for_status()
+
+    # ------------------------------------------------------------------
+    # Live workspace view (claude/live-workspace-view-plan.md §2/§3) --
+    # pull-only reads against whichever instance owns the session right
+    # now, same routing as send_message. SessionNotActive here means the
+    # same thing it means for send_message: no live owner to ask, not an
+    # error in the request itself.
+    # ------------------------------------------------------------------
+
+    async def list_files(self, session_id: uuid.UUID) -> list[str]:
+        base_url = await self._owner_base_url(session_id)
+        response = await self._http.get(
+            f"{base_url}/internal/sessions/{session_id}/files", headers={"X-Internal-Secret": self._secret}
+        )
+        response.raise_for_status()
+        return response.json()["paths"]
+
+    async def read_file(self, session_id: uuid.UUID, path: str) -> str:
+        base_url = await self._owner_base_url(session_id)
+        response = await self._http.get(
+            f"{base_url}/internal/sessions/{session_id}/files/content",
+            params={"path": path},
+            headers={"X-Internal-Secret": self._secret},
+        )
+        if response.status_code == 404:
+            raise FileNotFoundOnSandbox(path)
+        response.raise_for_status()
+        return response.json()["content"]
+
+    async def file_diff(self, session_id: uuid.UUID, path: str) -> str:
+        base_url = await self._owner_base_url(session_id)
+        response = await self._http.get(
+            f"{base_url}/internal/sessions/{session_id}/files/diff",
+            params={"path": path},
+            headers={"X-Internal-Secret": self._secret},
+        )
+        response.raise_for_status()
+        return response.json()["diff"]
+
+    async def cumulative_diff(self, session_id: uuid.UUID) -> str:
+        base_url = await self._owner_base_url(session_id)
+        response = await self._http.get(
+            f"{base_url}/internal/sessions/{session_id}/diff", headers={"X-Internal-Secret": self._secret}
+        )
+        response.raise_for_status()
+        return response.json()["diff"]

@@ -64,3 +64,51 @@ async def send_message(
     # session to pick up, not synchronously processed by this request --
     # Agent Loop handles it asynchronously (flow 04).
     await service.forward_message(session_id, user, body.text)
+
+
+# ---------------------------------------------------------------------
+# Live workspace view (claude/live-workspace-view-plan.md §2/§3) --
+# pull-only: the file tree, a file's current content, a file's diff
+# since its last commit, and the cumulative diff vs. the default branch
+# (the pre-PR review view). SSE (routers/events.py) only ever tells the
+# frontend *that* something changed; these are what it calls to actually
+# fetch content, on demand.
+# ---------------------------------------------------------------------
+
+
+@router.get("/{session_id}/files")
+async def list_files(
+    session_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    service: SessionService = Depends(get_session_service),
+) -> list[str]:
+    return await service.list_files(session_id, user)
+
+
+@router.get("/{session_id}/files/content")
+async def get_file_content(
+    session_id: uuid.UUID,
+    path: str,
+    user: User = Depends(get_current_user),
+    service: SessionService = Depends(get_session_service),
+) -> dict:
+    return {"content": await service.read_file(session_id, user, path)}
+
+
+@router.get("/{session_id}/files/diff")
+async def get_file_diff(
+    session_id: uuid.UUID,
+    path: str,
+    user: User = Depends(get_current_user),
+    service: SessionService = Depends(get_session_service),
+) -> dict:
+    return {"diff": await service.file_diff(session_id, user, path)}
+
+
+@router.get("/{session_id}/diff")
+async def get_cumulative_diff(
+    session_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    service: SessionService = Depends(get_session_service),
+) -> dict:
+    return {"diff": await service.cumulative_diff(session_id, user)}

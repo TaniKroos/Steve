@@ -22,6 +22,7 @@ import logging
 import shlex
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from cloudagent_core.db.session import db_session_scope
 from cloudagent_core.github_app import GithubApp
@@ -30,6 +31,7 @@ from app.events.publisher import EventPublisher
 from app.exceptions import RecoveryExhausted, SandboxUnreachableError
 from app.llm.port import LLMPort, ToolUseBlock, turn_to_content_blocks
 from app.repositories.message_repository import MessageRepository
+from app.repositories.sandbox_repository import SandboxRepository
 from app.repositories.secret_repository import SecretRepository
 from app.repositories.session_repository import SessionRepository
 from app.repositories.tool_call_repository import ToolCallRepository
@@ -43,6 +45,13 @@ logger = logging.getLogger(__name__)
 
 _REPO_DIR = "/home/user/repo"
 _MAX_SANDBOX_RECOVERY_ATTEMPTS = 2
+# Editor-tool names whose successful dispatch actually changed a file on
+# disk -- open_file is deliberately excluded (read-only, nothing to
+# notify about). Drives the lightweight `file_edit` SSE notification in
+# `_dispatch` -- see claude/live-workspace-view-plan.md §3.1 for why that
+# event carries no diff body (a prior draft did, and pushed it to every
+# connected browser tab regardless of who was watching).
+_FILE_WRITE_TOOLS = frozenset({"str_replace", "create_file", "insert_at_line", "undo_edit"})
 
 
 @dataclass
@@ -189,15 +198,41 @@ class SessionWorker:
                     # same turn" apart from "a new one just started" from
                     # the text_delta/tool_call stream alone.
                     await self._events.publish(self.session_id, {"type": "message_complete"})
-                    return  # natural end of turn -- nothing more requested
+                    # A turn with no tool_use at all is the model replying
+                    # in plain text instead of calling message_user --
+                    # observed in practice (a real session wrapped up a
+                    # commit with a plain-text summary and the session
+                    # went idle without ever asking for PR sign-off, in
+                    # direct violation of the system prompt's "always
+                    # BLOCK before opening a PR" rule). There is no signal
+                    # here that distinguishes "truly finished" from "the
+                    # model forgot to call message_user" -- both look
+                    # identical. Rather than trust the model to always
+                    # comply and end the session outright, treat this
+                    # exactly like an explicit BLOCK: wait for the user's
+                    # next message instead of tearing the session down.
+                    await self._update_status("blocked")
+                    text = await self.incoming.get()
+                    await self._update_status("running")
+                    content = [{"type": "text", "text": text}]
+                    self._history.append({"role": "user", "content": content})
+                    await self._save_message(role="user", content=content)
+                    continue  # nothing to dispatch on this turn -- already handled above
 
-                await self._dispatch_all(message.id, turn.tool_uses)
+                session_done = await self._dispatch_all(message.id, turn.tool_uses)
                 await self._events.publish(self.session_id, {"type": "message_complete"})
+                if session_done:
+                    return  # message_user(DONE) -- the only real "end the session" signal
 
             if not produced_turn:
                 raise RuntimeError("LLM stream ended without producing a turn_complete event")
 
-    async def _dispatch_all(self, message_id: uuid.UUID, tool_uses: list[ToolUseBlock]) -> None:
+    async def _dispatch_all(self, message_id: uuid.UUID, tool_uses: list[ToolUseBlock]) -> bool:
+        """Returns True if this turn's tool calls included a
+        message_user(DONE) -- the one explicit signal that tells
+        `_loop_until_done` to actually end the session rather than keep
+        looping (see `ToolResult.done`)."""
+        session_done = False
         for index, tool_use in enumerate(tool_uses):
             try:
                 result = await self._dispatch(message_id, tool_use)
@@ -225,6 +260,8 @@ class SessionWorker:
                 raise
 
             self._history.append(result.as_tool_result_message())
+            if result.done:
+                session_done = True
             if result.blocked:
                 await self._update_status("blocked")
                 text = await self.incoming.get()
@@ -232,6 +269,7 @@ class SessionWorker:
                 content = [{"type": "text", "text": text}]
                 self._history.append({"role": "user", "content": content})
                 await self._save_message(role="user", content=content)
+        return session_done
 
     async def _dispatch(self, message_id: uuid.UUID, tool_use: ToolUseBlock) -> ToolResult:
         async with db_session_scope(self._session_factory) as db:
@@ -253,14 +291,27 @@ class SessionWorker:
             result = await self._tools.dispatch(tool_use.id, tool_use.name, tool_use.input, self._tool_context)
         except SandboxUnreachableError:
             async with db_session_scope(self._session_factory) as db:
-                await ToolCallRepository(db).complete(tool_call.id, output={"error": "sandbox unreachable"}, status="error")
+                await ToolCallRepository(db).complete(
+                    tool_call.id,
+                    output={"content": "sandbox connection was lost; it will be restarted automatically"},
+                    status="error",
+                )
             raise
         except Exception as exc:  # noqa: BLE001 -- a bug in one tool shouldn't kill the whole session
             result = ToolResult(tool_use_id=tool_use.id, content=f"tool error: {exc}", is_error=True)
 
         async with db_session_scope(self._session_factory) as db:
+            # Persist the exact string the LLM saw (`content`) alongside
+            # whatever richer structured `output` the tool returned --
+            # some tools' `output` isn't just `{"content": ...}` (e.g.
+            # git_github's `pr`/`checks`/`data`), so storing only
+            # `result.output` would lose the literal tool_result text
+            # needed to reconstruct history on a crash-recovery rehydrate
+            # (MessageRepository.load_history).
             await ToolCallRepository(db).complete(
-                tool_call.id, output=result.output, status="error" if result.is_error else "success"
+                tool_call.id,
+                output={"content": result.content, "details": result.output},
+                status="error" if result.is_error else "success",
             )
         await self._events.publish(
             self.session_id,
@@ -272,6 +323,16 @@ class SessionWorker:
                 "summary": result.content[:200],
             },
         )
+
+        if not result.is_error and tool_use.name in _FILE_WRITE_TOOLS and result.output and "path" in result.output:
+            # Deliberately no diff here -- the frontend pulls
+            # GET .../files/diff only for whichever file it currently has
+            # open (claude/live-workspace-view-plan.md §3.1/§6).
+            await self._events.publish(
+                self.session_id,
+                {"type": "file_edit", "path": result.output["path"], "tool": tool_use.name},
+            )
+
         return result
 
     # ------------------------------------------------------------------
@@ -369,6 +430,61 @@ class SessionWorker:
                 f"git -C {shlex.quote(_REPO_DIR)} checkout {shlex.quote(session.branch_name)}", timeout=30
             )
         await self._events.publish(self.session_id, {"type": "status", "text": "sandbox restarted, resuming"})
+
+    # ------------------------------------------------------------------
+    # Live workspace view (claude/live-workspace-view-plan.md) -- called
+    # by routers/internal.py's file-browsing/diff endpoints, never by the
+    # tool-calling loop itself. Pull-only, on demand: nothing here is
+    # pushed proactively over SSE (§2/§3 of that plan).
+    # ------------------------------------------------------------------
+
+    async def list_repo_files(self) -> list[str]:
+        """Tracked + untracked-but-not-ignored paths -- respects the
+        repo's own .gitignore for free, so build output/node_modules/etc
+        never show up without hand-maintaining a separate exclude list."""
+        result = await self._sandbox.run_command(
+            "git ls-files --cached --others --exclude-standard", cwd=_REPO_DIR
+        )
+        return [line for line in result.stdout.splitlines() if line]
+
+    async def read_repo_file(self, path: str) -> str:
+        """Real current working-tree content, including uncommitted
+        edits -- may raise `FileNotFoundException`, left to the caller
+        (routers/internal.py) to turn into a 404."""
+        resolved = path if path.startswith("/") else f"{_REPO_DIR}/{path}"
+        return await self._sandbox.read_file(resolved)
+
+    async def file_diff(self, path: str) -> str:
+        """Changes to one file since its last commit. Recomputed fresh on
+        every call rather than cached, since it's only ever pulled for
+        whichever single file the user currently has open."""
+        result = await self._sandbox.run_command(f"git diff -- {shlex.quote(path)}", cwd=_REPO_DIR)
+        return result.stdout
+
+    async def cumulative_diff(self) -> str:
+        """Everything changed this session vs. the default branch -- what
+        the eventual PR diff will actually look like. Pulled once by the
+        frontend whenever the session goes `blocked`, for the
+        confirm-before-PR moment (plan §4)."""
+        result = await self._sandbox.run_command(
+            f"git diff {shlex.quote(self._repo_context.default_branch)}...HEAD", cwd=_REPO_DIR
+        )
+        return result.stdout
+
+    async def teardown_sandbox(self) -> None:
+        """Called exactly once, from `run_owned_session`'s `finally`
+        (loop/ownership.py) -- the single choke point that runs no
+        matter how `run()` exits. Closes a real gap (plan §5): nothing
+        in this codebase called `kill_sandbox()` before this, so a
+        session that went idle or failed just left its sandbox running,
+        billed, until the untouched 4-hour hard cap. Safe to call
+        against an already-gone sandbox -- `kill_sandbox()`'s own
+        `except SandboxException: pass` treats that as a no-op."""
+        await self._sandbox.kill_sandbox()
+        async with db_session_scope(self._session_factory) as db:
+            await SandboxRepository(db).mark_terminated_by_e2b_id(
+                self._sandbox.sandbox_id, terminated_at=datetime.now(timezone.utc)
+            )
 
     def _build_tool_context(self) -> ToolContext:
         return ToolContext(

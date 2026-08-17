@@ -93,4 +93,23 @@ export const api = {
   // itself (including auto-reconnect on a transient drop). See
   // lib/useSessionChat.ts.
   eventsUrl: (id: string) => `${BASE_URL}/api/sessions/${id}/events`,
+
+  // --- Live workspace view (claude/live-workspace-view-plan.md §2/§3) ---
+  // All four are plain pull requests, called on demand (panel open, a
+  // file click, a status flip to "blocked") -- never in response to
+  // every SSE event, which is the whole point of the design (see the
+  // plan's §3.1 on why `file_edit` itself carries no content). A 409
+  // here means `SessionNotActive` on the backend -- no live Agent Loop
+  // owner to ask right now; callers treat that as "not available", not
+  // a hard error (see lib/useSandboxWorkspace.ts).
+
+  listFiles: (id: string) => apiFetch<string[]>(`/api/sessions/${id}/files`),
+
+  fileContent: (id: string, path: string) =>
+    apiFetch<{ content: string }>(`/api/sessions/${id}/files/content?path=${encodeURIComponent(path)}`),
+
+  fileDiff: (id: string, path: string) =>
+    apiFetch<{ diff: string }>(`/api/sessions/${id}/files/diff?path=${encodeURIComponent(path)}`),
+
+  cumulativeDiff: (id: string) => apiFetch<{ diff: string }>(`/api/sessions/${id}/diff`),
 };

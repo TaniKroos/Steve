@@ -11,12 +11,15 @@ import asyncio
 import logging
 import uuid
 
+from e2b import FileNotFoundException
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from app.dependencies import get_ownership, get_worker_factory, get_worker_registry, verify_internal_secret
+from app.exceptions import SandboxUnreachableError
 from app.loop.factory import SessionWorkerFactory
 from app.loop.ownership import OwnershipRegistry, run_owned_session
+from app.loop.session_worker import SessionWorker
 from app.loop.worker_registry import WorkerRegistry
 
 logger = logging.getLogger(__name__)
@@ -80,3 +83,80 @@ async def send_message(
         raise HTTPException(status_code=404, detail="session not active on this instance")
     worker.incoming.put_nowait(body.text)
     return {"status": "accepted"}
+
+
+def _get_active_worker(session_id: uuid.UUID, worker_registry: WorkerRegistry) -> SessionWorker:
+    """Shared by every live-workspace-view endpoint below (plan
+    claude/live-workspace-view-plan.md §3.2) -- same "not active on this
+    instance" contract `send_message` above already uses; backend's
+    routing guarantees a 404 here only ever means the session genuinely
+    isn't running anywhere right now, not that it landed on the wrong
+    instance."""
+    worker = worker_registry.get(session_id)
+    if worker is None:
+        raise HTTPException(status_code=404, detail="session not active on this instance")
+    return worker
+
+
+# ---------------------------------------------------------------------
+# Live workspace view -- pull-only file browsing/diffs (plan §2/§3).
+# Never pushed over SSE; SessionWorker's `file_edit`/`shell_output`
+# events only ever tell the frontend *that* something changed, these
+# endpoints are what it calls to actually fetch content.
+# ---------------------------------------------------------------------
+
+
+@router.get("/{session_id}/files")
+async def list_files(
+    session_id: uuid.UUID,
+    worker_registry: WorkerRegistry = Depends(get_worker_registry),
+) -> dict:
+    worker = _get_active_worker(session_id, worker_registry)
+    try:
+        paths = await worker.list_repo_files()
+    except SandboxUnreachableError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"paths": paths}
+
+
+@router.get("/{session_id}/files/content")
+async def read_file_content(
+    session_id: uuid.UUID,
+    path: str,
+    worker_registry: WorkerRegistry = Depends(get_worker_registry),
+) -> dict:
+    worker = _get_active_worker(session_id, worker_registry)
+    try:
+        content = await worker.read_repo_file(path)
+    except FileNotFoundException as exc:
+        raise HTTPException(status_code=404, detail=f"file not found: {path}") from exc
+    except SandboxUnreachableError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"content": content}
+
+
+@router.get("/{session_id}/files/diff")
+async def read_file_diff(
+    session_id: uuid.UUID,
+    path: str,
+    worker_registry: WorkerRegistry = Depends(get_worker_registry),
+) -> dict:
+    worker = _get_active_worker(session_id, worker_registry)
+    try:
+        diff = await worker.file_diff(path)
+    except SandboxUnreachableError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"diff": diff}
+
+
+@router.get("/{session_id}/diff")
+async def read_cumulative_diff(
+    session_id: uuid.UUID,
+    worker_registry: WorkerRegistry = Depends(get_worker_registry),
+) -> dict:
+    worker = _get_active_worker(session_id, worker_registry)
+    try:
+        diff = await worker.cumulative_diff()
+    except SandboxUnreachableError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"diff": diff}

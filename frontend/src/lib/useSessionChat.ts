@@ -8,13 +8,24 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { toChatMessages } from "./transform";
-import type { ChatMessage, SessionEvent, ToolCall } from "../types";
+import type { ChatMessage, FileEditEntry, SessionEvent, TerminalLine, ToolCall } from "../types";
 
 export function useSessionChat(sessionId: string | null, onSessionUpdate: (prUrl: string, prNumber: number) => void) {
   const [history, setHistory] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState<ChatMessage | null>(null);
   const [liveStatus, setLiveStatus] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  // Live workspace view state (claude/live-workspace-view-plan.md) --
+  // parsed off this same SSE connection, deliberately not a second
+  // `EventSource` (plan §6). `fileEditLog` is an ever-growing
+  // this-session activity list (tree dirty-markers, tab activity dots);
+  // `lastFileEdit` is just its most recent entry, kept separately so
+  // `useSandboxWorkspace` can cheaply watch "did the file I have open
+  // just change" without re-scanning the whole log on every event.
+  const [fileEditLog, setFileEditLog] = useState<FileEditEntry[]>([]);
+  const [lastFileEdit, setLastFileEdit] = useState<FileEditEntry | null>(null);
+  const [terminalLines, setTerminalLines] = useState<TerminalLine[]>([]);
 
   // `onSessionUpdate` is recreated every AppShell render -- routing it
   // through a ref keeps the SSE effect below keyed only on `sessionId`,
@@ -29,6 +40,9 @@ export function useSessionChat(sessionId: string | null, onSessionUpdate: (prUrl
   useEffect(() => {
     setDraft(null);
     setLiveStatus(null);
+    setFileEditLog([]);
+    setLastFileEdit(null);
+    setTerminalLines([]);
     if (!sessionId) {
       setHistory([]);
       return;
@@ -113,6 +127,17 @@ export function useSessionChat(sessionId: string | null, onSessionUpdate: (prUrl
             toolCalls[toolCalls.length - 1] = { ...last, detail: (last.detail ?? "") + event.chunk };
             return { ...current, toolCalls };
           });
+          // Separately, the Terminal tab's own raw buffer -- independent
+          // of which chat bubble/tool call this chunk belongs to, and
+          // kept regardless of whether the panel's Terminal tab is even
+          // the one on screen right now (tabs are manual, not
+          // auto-switching -- see claude/live-workspace-view-plan.md §6).
+          setTerminalLines((lines) => [...lines, { stream: event.stream, chunk: event.chunk }]);
+          break;
+
+        case "file_edit":
+          setLastFileEdit({ path: event.path, tool: event.tool, at: Date.now() });
+          setFileEditLog((log) => [...log, { path: event.path, tool: event.tool, at: Date.now() }]);
           break;
 
         case "message_complete":
@@ -158,5 +183,8 @@ export function useSessionChat(sessionId: string | null, onSessionUpdate: (prUrl
     liveStatus,
     loading,
     send,
+    fileEditLog,
+    lastFileEdit,
+    terminalLines,
   };
 }

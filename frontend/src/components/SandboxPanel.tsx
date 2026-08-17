@@ -1,30 +1,111 @@
-import { useState } from "react";
+// Live workspace view (claude/live-workspace-view-plan.md). Two tabs,
+// switched manually only -- no auto-switching (plan §6): both keep
+// updating live off the same SSE connection underneath regardless of
+// which one is on screen (`useSessionChat.ts`), but the user decides
+// when to look at which. Files/content/diffs are pull-only, fetched via
+// `useSandboxWorkspace.ts` -- never pushed over SSE (plan §2/§3).
+import { useEffect, useRef, useState } from "react";
 import {
+  ChevronRight,
+  ChevronsDownUp,
   Code2,
   File,
+  FileCode2,
   FileJson,
+  FileText,
   Folder,
+  FolderOpen,
   GitBranch,
-  Globe,
+  Image as ImageIcon,
+  Loader2,
   Lock,
+  Palette,
   RefreshCw,
-  Search,
   Settings2,
+  Terminal as TerminalIcon,
   X,
 } from "lucide-react";
-import type { Session } from "../types";
+import { PrismAsync as SyntaxHighlighter } from "react-syntax-highlighter";
+import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
+import { useResizable } from "../lib/useResizable";
+import { useSandboxWorkspace } from "../lib/useSandboxWorkspace";
+import type { FileEditEntry, Session, TerminalLine } from "../types";
+import { DiffLines } from "./DiffLines";
 
-type Tab = "browser" | "vscode";
+type Tab = "files" | "terminal";
 
-export function SandboxPanel({ session, onClose }: { session: Session; onClose: () => void }) {
-  const [tab, setTab] = useState<Tab>("vscode");
+const PANEL_MIN = 380;
+const PANEL_MAX = 880;
+const PANEL_DEFAULT = 460;
+const EXPLORER_MIN = 140;
+const EXPLORER_MAX = 480;
+const EXPLORER_DEFAULT = 200;
+
+export function SandboxPanel({
+  session,
+  onClose,
+  lastFileEdit,
+  fileEditLog,
+  terminalLines,
+}: {
+  session: Session;
+  onClose: () => void;
+  lastFileEdit: FileEditEntry | null;
+  fileEditLog: FileEditEntry[];
+  terminalLines: TerminalLine[];
+}) {
+  const [tab, setTab] = useState<Tab>("files");
   const live = session.status === "running" || session.status === "blocked";
 
+  const { files, filesUnavailable, openPath, openContent, openDiff, openLoading, openFile, reviewDiff, refresh } =
+    useSandboxWorkspace(session.id, session.status, lastFileEdit);
+
+  // The panel is docked to the right edge of the screen -- its own drag
+  // handle lives on its *left* edge, so growing it means dragging left
+  // (`invert: true`, see useResizable.ts's comment on why that flip
+  // lives in the hook, not duplicated at every call site).
+  const { size: panelWidth, isDragging: resizingPanel, onMouseDown: onPanelResizeStart } = useResizable(
+    PANEL_DEFAULT,
+    { min: PANEL_MIN, max: PANEL_MAX, storageKey: "cloudagent:sandbox-panel-width", invert: true },
+  );
+
+  // Manual tabs only (plan §6) -- but a small unread-style dot on the
+  // tab the user isn't currently looking at restores some of the
+  // "something happened" signal auto-switching used to provide, without
+  // reintroducing auto-switching itself.
+  const seenEditCount = useRef(0);
+  const seenTerminalCount = useRef(0);
+  useEffect(() => {
+    if (tab === "files") seenEditCount.current = fileEditLog.length;
+    if (tab === "terminal") seenTerminalCount.current = terminalLines.length;
+  }, [tab, fileEditLog.length, terminalLines.length]);
+  const filesHaveActivity = tab !== "files" && fileEditLog.length > seenEditCount.current;
+  const terminalHasActivity = tab !== "terminal" && terminalLines.length > seenTerminalCount.current;
+
+  const dirtyPaths = new Set(fileEditLog.map((e) => e.path));
+
   return (
-    <aside className="flex h-screen w-[460px] shrink-0 flex-col border-l border-white/[0.06] bg-surface">
+    <aside
+      style={{ width: panelWidth }}
+      className={`relative flex h-screen shrink-0 flex-col border-l border-white/[0.06] bg-surface ${resizingPanel ? "" : "transition-[width] duration-75"}`}
+    >
+      <ResizeHandle onMouseDown={onPanelResizeStart} active={resizingPanel} side="left" />
+
       <div className="flex items-center gap-1 border-b border-white/[0.06] px-3 py-2.5">
-        <TabButton icon={Code2} label="VS Code" active={tab === "vscode"} onClick={() => setTab("vscode")} />
-        <TabButton icon={Globe} label="Browser" active={tab === "browser"} onClick={() => setTab("browser")} />
+        <TabButton
+          icon={Code2}
+          label="Files"
+          active={tab === "files"}
+          showDot={filesHaveActivity}
+          onClick={() => setTab("files")}
+        />
+        <TabButton
+          icon={TerminalIcon}
+          label="Terminal"
+          active={tab === "terminal"}
+          showDot={terminalHasActivity}
+          onClick={() => setTab("terminal")}
+        />
 
         <div className="ml-auto flex items-center gap-2">
           <span
@@ -46,7 +127,25 @@ export function SandboxPanel({ session, onClose }: { session: Session; onClose: 
         </div>
       </div>
 
-      <div className="min-h-0 flex-1">{tab === "browser" ? <BrowserPreview /> : <VSCodePreview session={session} />}</div>
+      <div className="min-h-0 flex-1">
+        {tab === "files" ? (
+          <FilesTab
+            session={session}
+            files={files}
+            filesUnavailable={filesUnavailable}
+            dirtyPaths={dirtyPaths}
+            openPath={openPath}
+            openContent={openContent}
+            openDiff={openDiff}
+            openLoading={openLoading}
+            openFile={openFile}
+            reviewDiff={session.status === "blocked" ? reviewDiff : null}
+            onRefresh={refresh}
+          />
+        ) : (
+          <TerminalTab lines={terminalLines} />
+        )}
+      </div>
     </aside>
   );
 }
@@ -55,11 +154,13 @@ function TabButton({
   icon: Icon,
   label,
   active,
+  showDot,
   onClick,
 }: {
-  icon: typeof Globe;
+  icon: typeof Code2;
   label: string;
   active: boolean;
+  showDot: boolean;
   onClick: () => void;
 }) {
   return (
@@ -71,138 +172,329 @@ function TabButton({
     >
       <Icon size={13} strokeWidth={2.25} />
       {label}
+      {showDot && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent-to" />}
     </button>
   );
 }
 
-function BrowserPreview() {
+// A thin drag-to-resize rail: a wide invisible hit target with a 1px
+// line centered inside it (so the line stays subtle but the click/drag
+// target is comfortable), highlighting on hover and while actively
+// dragging -- standard editor-pane affordance.
+function ResizeHandle({
+  onMouseDown,
+  active,
+  side,
+}: {
+  onMouseDown: (e: React.MouseEvent) => void;
+  active: boolean;
+  side: "left" | "right";
+}) {
   return (
-    <div className="flex h-full flex-col">
-      <div className="flex items-center gap-2 border-b border-white/[0.06] bg-black/20 px-3 py-2">
-        <div className="flex gap-1.5">
-          <span className="h-2.5 w-2.5 rounded-full bg-zinc-700" />
-          <span className="h-2.5 w-2.5 rounded-full bg-zinc-700" />
-          <span className="h-2.5 w-2.5 rounded-full bg-zinc-700" />
-        </div>
-        <div className="flex flex-1 items-center gap-1.5 rounded-md border border-white/[0.06] bg-white/[0.03] px-2.5 py-1 text-[11px] text-zinc-400">
-          <Lock size={10} className="text-accent-to" />
-          <span className="truncate font-mono">3000-sbx-i9x2k1.e2b.dev/settings</span>
-        </div>
-        <RefreshCw size={13} className="text-zinc-500" />
-      </div>
-
-      {/* mocked live preview of the app running inside the sandbox */}
-      <div className="flex-1 overflow-hidden bg-zinc-100 text-zinc-900">
-        <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-2.5">
-          <div className="flex items-center gap-1.5 text-[12px] font-semibold">
-            <span className="h-4 w-4 rounded bg-gradient-to-br from-accent-via to-accent-to" />
-            Orbit
-          </div>
-          <div className="flex items-center gap-3 text-[11px] text-zinc-500">
-            <span>Dashboard</span>
-            <span className="text-zinc-900">Settings</span>
-            <span>Billing</span>
-          </div>
-        </div>
-
-        <div className="p-4">
-          <p className="text-[10px] font-semibold uppercase tracking-wide text-zinc-400">Appearance</p>
-          <div className="mt-2 flex items-center justify-between rounded-lg border border-zinc-200 bg-white p-3">
-            <div>
-              <p className="text-[12px] font-medium text-zinc-800">Dark mode</p>
-              <p className="text-[10.5px] text-zinc-500">Match system, or force on / off</p>
-            </div>
-            <span className="flex h-5 w-9 items-center rounded-full bg-gradient-to-r from-accent-via to-accent-to p-0.5">
-              <span className="h-4 w-4 rounded-full bg-white shadow" />
-            </span>
-          </div>
-          <div className="mt-3 h-16 animate-pulse rounded-lg bg-zinc-200/70" />
-          <div className="mt-2 h-16 w-2/3 animate-pulse rounded-lg bg-zinc-200/50" />
-        </div>
-      </div>
+    <div
+      onMouseDown={onMouseDown}
+      className={`group absolute top-0 bottom-0 z-10 w-2.5 cursor-col-resize ${side === "left" ? "-left-1" : "-right-1"}`}
+    >
+      <div
+        className={`absolute inset-y-0 left-1/2 w-px -translate-x-1/2 transition-colors ${
+          active ? "bg-accent-to" : "bg-transparent group-hover:bg-accent-to/50"
+        }`}
+      />
     </div>
   );
 }
 
-const FILES = [
-  { name: "src", dir: true, depth: 0 },
-  { name: "theme", dir: true, depth: 1 },
-  { name: "ThemeProvider.tsx", dir: false, depth: 2, active: true },
-  { name: "components", dir: true, depth: 1 },
-  { name: "SettingsPage.tsx", dir: false, depth: 2 },
-  { name: "App.tsx", dir: false, depth: 1 },
-  { name: "package.json", dir: false, depth: 0, json: true },
-];
+// ---------------------------------------------------------------------
+// Files tab: real file tree (git ls-files, via useSandboxWorkspace) +
+// syntax-highlighted content + uncommitted diff for whichever file is
+// open, plus a pre-PR full-diff review banner when the session is
+// blocked awaiting confirmation (plan §4/§7).
+// ---------------------------------------------------------------------
 
-const CODE_LINES: { n: number; tokens: { t: string; c?: string }[] }[] = [
-  { n: 1, tokens: [{ t: "import", c: "text-accent-to" }, { t: " { createContext, useContext, useEffect, useState } " }, { t: "from", c: "text-accent-to" }, { t: ' "react";', c: "text-amber-300/80" }] },
-  { n: 2, tokens: [] },
-  { n: 3, tokens: [{ t: "type", c: "text-accent-to" }, { t: " Theme = " }, { t: '"light"', c: "text-amber-300/80" }, { t: " | " }, { t: '"dark"', c: "text-amber-300/80" }, { t: ";" }] },
-  { n: 4, tokens: [] },
-  { n: 5, tokens: [{ t: "const", c: "text-accent-to" }, { t: " ThemeContext = " }, { t: "createContext", c: "text-sky-300/90" }, { t: "<Theme | " }, { t: "null", c: "text-accent-to" }, { t: ">(" }, { t: "null", c: "text-accent-to" }, { t: ");" }] },
-  { n: 6, tokens: [] },
-  { n: 7, tokens: [{ t: "export function", c: "text-accent-to" }, { t: " ThemeProvider({ children }: { children: React.ReactNode }) {" }] },
-  { n: 8, tokens: [{ t: "  const", c: "text-accent-to" }, { t: " [theme, setTheme] = " }, { t: "useState", c: "text-sky-300/90" }, { t: "<Theme>(() =>" }] },
-  { n: 9, tokens: [{ t: "    (" }, { t: "localStorage", c: "text-sky-300/90" }, { t: ".getItem(" }, { t: '"theme"', c: "text-amber-300/80" }, { t: ") " }, { t: "as", c: "text-accent-to" }, { t: " Theme) ?? " }, { t: '"dark"', c: "text-amber-300/80" }] },
-  { n: 10, tokens: [{ t: "  );" }] },
-  { n: 11, tokens: [] },
-  { n: 12, tokens: [{ t: "  useEffect", c: "text-sky-300/90" }, { t: "(() => {" }] },
-  { n: 13, tokens: [{ t: "    document", c: "text-sky-300/90" }, { t: ".documentElement.dataset.theme = theme;" }] },
-  { n: 14, tokens: [{ t: "    localStorage", c: "text-sky-300/90" }, { t: ".setItem(" }, { t: '"theme"', c: "text-amber-300/80" }, { t: ", theme);" }] },
-  { n: 15, tokens: [{ t: "  }, [theme]);" }] },
-];
+interface TreeNode {
+  name: string;
+  path: string;
+  dir: boolean;
+  children?: TreeNode[];
+}
 
-function VSCodePreview({ session }: { session: Session }) {
+function buildTree(paths: string[]): TreeNode[] {
+  const root: TreeNode[] = [];
+  for (const path of paths) {
+    const parts = path.split("/").filter(Boolean);
+    let level = root;
+    let accumulated = "";
+    parts.forEach((part, i) => {
+      accumulated = accumulated ? `${accumulated}/${part}` : part;
+      const isLast = i === parts.length - 1;
+      let node = level.find((n) => n.name === part && n.dir === !isLast);
+      if (!node) {
+        node = { name: part, path: accumulated, dir: !isLast, children: isLast ? undefined : [] };
+        level.push(node);
+      }
+      if (!isLast) level = node.children!;
+    });
+  }
+  const sortRec = (nodes: TreeNode[]) => {
+    nodes.sort((a, b) => (a.dir === b.dir ? a.name.localeCompare(b.name) : a.dir ? -1 : 1));
+    for (const n of nodes) if (n.children) sortRec(n.children);
+  };
+  sortRec(root);
+  return root;
+}
+
+// Every directory path in the tree, depth-first -- what "collapse all"
+// needs to seed its collapsed-set with, since collapsed state is a flat
+// set of paths (§ FileTree below), not something the tree structure
+// tracks itself.
+function allDirPaths(nodes: TreeNode[]): string[] {
+  const paths: string[] = [];
+  for (const node of nodes) {
+    if (node.dir) {
+      paths.push(node.path);
+      if (node.children) paths.push(...allDirPaths(node.children));
+    }
+  }
+  return paths;
+}
+
+const EXTENSION_LANGUAGE: Record<string, string> = {
+  ts: "typescript",
+  tsx: "tsx",
+  js: "javascript",
+  jsx: "jsx",
+  py: "python",
+  go: "go",
+  rs: "rust",
+  rb: "ruby",
+  java: "java",
+  json: "json",
+  yml: "yaml",
+  yaml: "yaml",
+  md: "markdown",
+  css: "css",
+  scss: "scss",
+  html: "markup",
+  sh: "bash",
+  sql: "sql",
+  toml: "toml",
+};
+
+function languageForPath(path: string): string {
+  const ext = path.split(".").pop()?.toLowerCase() ?? "";
+  return EXTENSION_LANGUAGE[ext] ?? "text";
+}
+
+// File-type icon + color, keyed off extension (with a couple of
+// filename-exact overrides for lockfiles, which carry no useful
+// extension of their own) -- the "actual editor feel" this was asked
+// for leans heavily on an IDE's file tree reading as color-coded at a
+// glance rather than every file looking the same.
+const LOCKFILE_NAMES = new Set(["package-lock.json", "yarn.lock", "pnpm-lock.yaml", "uv.lock", "Cargo.lock", "poetry.lock"]);
+
+function fileIconFor(name: string): { Icon: typeof File; className: string } {
+  if (LOCKFILE_NAMES.has(name) || name.endsWith(".lock")) {
+    return { Icon: Lock, className: "text-zinc-500" };
+  }
+  const ext = name.split(".").pop()?.toLowerCase() ?? "";
+  switch (ext) {
+    case "ts":
+    case "tsx":
+    case "js":
+    case "jsx":
+    case "mjs":
+    case "cjs":
+      return { Icon: FileCode2, className: "text-sky-400/90" };
+    case "json":
+      return { Icon: FileJson, className: "text-amber-400/80" };
+    case "py":
+    case "go":
+    case "rs":
+    case "rb":
+    case "java":
+    case "c":
+    case "cpp":
+      return { Icon: FileCode2, className: "text-emerald-400/80" };
+    case "css":
+    case "scss":
+    case "less":
+      return { Icon: Palette, className: "text-pink-400/80" };
+    case "html":
+    case "htm":
+      return { Icon: Code2, className: "text-orange-400/80" };
+    case "md":
+    case "mdx":
+      return { Icon: FileText, className: "text-zinc-400" };
+    case "yml":
+    case "yaml":
+    case "toml":
+    case "ini":
+    case "env":
+      return { Icon: Settings2, className: "text-violet-400/80" };
+    case "sh":
+    case "bash":
+    case "zsh":
+      return { Icon: TerminalIcon, className: "text-zinc-400" };
+    case "png":
+    case "jpg":
+    case "jpeg":
+    case "gif":
+    case "svg":
+    case "webp":
+    case "ico":
+      return { Icon: ImageIcon, className: "text-teal-400/80" };
+    default:
+      return { Icon: File, className: "text-accent-to" };
+  }
+}
+
+function FilesTab({
+  session,
+  files,
+  filesUnavailable,
+  dirtyPaths,
+  openPath,
+  openContent,
+  openDiff,
+  openLoading,
+  openFile,
+  reviewDiff,
+  onRefresh,
+}: {
+  session: Session;
+  files: string[];
+  filesUnavailable: boolean;
+  dirtyPaths: Set<string>;
+  openPath: string | null;
+  openContent: string | null;
+  openDiff: string | null;
+  openLoading: boolean;
+  openFile: (path: string) => void;
+  reviewDiff: string | null;
+  onRefresh: () => void;
+}) {
+  const tree = buildTree(files);
+
+  // Lifted above FileTree (rather than each recursive level owning its
+  // own local state) so "collapse all" has one flat set of every
+  // directory path to seed, instead of needing to reach into N separate
+  // component instances -- see allDirPaths above.
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const toggle = (path: string) =>
+    setCollapsed((c) => {
+      const next = new Set(c);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  const collapseAll = () => setCollapsed(new Set(allDirPaths(tree)));
+
+  const {
+    size: explorerWidth,
+    isDragging: resizingExplorer,
+    onMouseDown: onExplorerResizeStart,
+  } = useResizable(EXPLORER_DEFAULT, {
+    min: EXPLORER_MIN,
+    max: EXPLORER_MAX,
+    storageKey: "cloudagent:explorer-width",
+  });
+
   return (
     <div className="flex h-full flex-col text-[12px]">
-      <div className="flex min-h-0 flex-1">
-        <div className="w-40 shrink-0 overflow-y-auto border-r border-white/[0.06] bg-black/10 py-2">
-          <div className="mb-1.5 flex items-center gap-1.5 px-2.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
-            <Search size={10} />
-            Explorer
+      {reviewDiff && (
+        <div className="shrink-0 border-b border-amber-500/20 bg-amber-500/[0.06]">
+          <div className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-amber-300/90">
+            Ready for your review -- full diff vs {session.branchName}
           </div>
-          {FILES.map((f) => (
-            <div
-              key={f.name}
-              style={{ paddingLeft: `${10 + f.depth * 12}px` }}
-              className={`flex cursor-default items-center gap-1.5 py-[3px] pr-2 ${
-                f.active ? "bg-white/[0.06] text-zinc-100" : "text-zinc-400"
-              }`}
-            >
-              {f.dir ? (
-                <Folder size={12} className="shrink-0 text-zinc-500" />
-              ) : f.json ? (
-                <FileJson size={12} className="shrink-0 text-amber-400/80" />
-              ) : (
-                <File size={12} className="shrink-0 text-accent-to" />
-              )}
-              <span className="truncate text-[11.5px]">{f.name}</span>
+          <pre className="max-h-40 overflow-auto pb-2 font-mono text-[11.5px] leading-relaxed">
+            <DiffLines text={reviewDiff || "(no changes yet)"} />
+          </pre>
+        </div>
+      )}
+
+      <div className="flex min-h-0 flex-1">
+        <div
+          style={{ width: explorerWidth }}
+          className="relative flex shrink-0 flex-col overflow-y-auto bg-black/10 py-1.5"
+        >
+          <div className="mb-1 flex shrink-0 items-center gap-1.5 px-2.5 pt-0.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+            Explorer
+            <span className="text-zinc-700">{files.length > 0 ? files.length : ""}</span>
+            <div className="ml-auto flex items-center gap-2">
+              <button
+                onClick={onRefresh}
+                title="Refresh file tree"
+                className="text-zinc-600 transition hover:text-zinc-300"
+              >
+                <RefreshCw size={11} />
+              </button>
+              <button onClick={collapseAll} title="Collapse all" className="text-zinc-600 transition hover:text-zinc-300">
+                <ChevronsDownUp size={11} />
+              </button>
             </div>
-          ))}
+          </div>
+          {filesUnavailable ? (
+            <p className="px-2.5 text-[11px] text-zinc-600">not available right now</p>
+          ) : tree.length === 0 ? (
+            <p className="px-2.5 text-[11px] text-zinc-600">no files yet</p>
+          ) : (
+            <FileTree
+              nodes={tree}
+              activePath={openPath}
+              dirtyPaths={dirtyPaths}
+              onSelect={openFile}
+              collapsed={collapsed}
+              onToggle={toggle}
+            />
+          )}
+          <ResizeHandle onMouseDown={onExplorerResizeStart} active={resizingExplorer} side="right" />
         </div>
 
         <div className="flex min-w-0 flex-1 flex-col">
-          <div className="flex shrink-0 items-center border-b border-white/[0.06] bg-black/10">
-            <div className="flex items-center gap-1.5 border-r border-white/[0.06] bg-black/20 px-3 py-1.5 text-[11.5px] text-zinc-200">
-              <File size={11} className="text-accent-to" />
-              ThemeProvider.tsx
-            </div>
-          </div>
-          <div className="flex-1 overflow-auto bg-black/20 py-2 font-mono leading-relaxed">
-            {CODE_LINES.map((line) => (
-              <div key={line.n} className="flex px-2 hover:bg-white/[0.02]">
-                <span className="w-6 shrink-0 select-none text-right text-zinc-600">{line.n}</span>
-                <span className="ml-3 whitespace-pre text-zinc-300">
-                  {line.tokens.length === 0
-                    ? " "
-                    : line.tokens.map((tok, i) => (
-                        <span key={i} className={tok.c}>
-                          {tok.t}
-                        </span>
-                      ))}
-                </span>
+          {openPath && (
+            <div className="flex shrink-0 items-center border-b border-white/[0.06] bg-black/10">
+              <div className="flex items-center gap-1.5 border-r border-t-2 border-t-accent-to border-white/[0.06] bg-black/20 px-3 py-1.5 text-[11.5px] text-zinc-200">
+                {(() => {
+                  const { Icon, className } = fileIconFor(openPath.split("/").pop() ?? openPath);
+                  return <Icon size={11} className={className} />;
+                })()}
+                <span className="truncate">{openPath}</span>
               </div>
-            ))}
+            </div>
+          )}
+
+          <div className="flex-1 overflow-auto bg-black/20">
+            {!openPath ? (
+              <p className="p-4 text-[12px] text-zinc-600">Select a file to view it.</p>
+            ) : openLoading ? (
+              <div className="flex items-center gap-2 p-4 text-[12px] text-zinc-500">
+                <Loader2 size={13} className="animate-spin" />
+                loading...
+              </div>
+            ) : (
+              <>
+                {openDiff && (
+                  <div className="border-b border-white/[0.06]">
+                    <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+                      Uncommitted changes
+                    </div>
+                    <pre className="max-h-40 overflow-auto pb-2 font-mono text-[11.5px] leading-relaxed">
+                      <DiffLines text={openDiff} />
+                    </pre>
+                  </div>
+                )}
+                {openContent !== null && (
+                  <SyntaxHighlighter
+                    language={languageForPath(openPath)}
+                    style={oneDark}
+                    customStyle={{ margin: 0, background: "transparent", fontSize: "12px", padding: "12px" }}
+                    showLineNumbers
+                  >
+                    {openContent}
+                  </SyntaxHighlighter>
+                )}
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -217,6 +509,125 @@ function VSCodePreview({ session }: { session: Session }) {
           sandbox: {session.repo.name}
         </span>
       </div>
+    </div>
+  );
+}
+
+const INDENT_BASE = 8; // px, left padding before depth-0's own icon
+const INDENT_STEP = 15; // px, per nesting level
+const GUIDE_OFFSET = INDENT_BASE + 7; // px, centers each guide line under its ancestor's icon column
+
+function FileTree({
+  nodes,
+  activePath,
+  dirtyPaths,
+  onSelect,
+  collapsed,
+  onToggle,
+  depth = 0,
+}: {
+  nodes: TreeNode[];
+  activePath: string | null;
+  dirtyPaths: Set<string>;
+  onSelect: (path: string) => void;
+  collapsed: Set<string>;
+  onToggle: (path: string) => void;
+  depth?: number;
+}) {
+  return (
+    <>
+      {nodes.map((node) => {
+        const isOpen = node.dir && !collapsed.has(node.path);
+        const isActive = node.path === activePath;
+        const { Icon: FileIcon, className: fileIconClass } = node.dir ? { Icon: Folder, className: "" } : fileIconFor(node.name);
+
+        return (
+          <div key={node.path}>
+            <div
+              style={{ paddingLeft: `${INDENT_BASE + depth * INDENT_STEP}px` }}
+              className={`group relative flex cursor-pointer items-center gap-1.5 py-[3px] pr-2 ${
+                isActive ? "bg-white/[0.07] text-zinc-100" : "text-zinc-400 hover:bg-white/[0.03]"
+              }`}
+              onClick={() => (node.dir ? onToggle(node.path) : onSelect(node.path))}
+            >
+              {isActive && <span className="absolute inset-y-0 left-0 w-[2px] bg-accent-to" />}
+
+              {/* Indent guides -- one faint vertical line per ancestor
+                  depth level, each row drawing only its own segment so
+                  consecutive rows read as one continuous rule (no need
+                  for a single tall absolutely-positioned line spanning
+                  a whole subtree). */}
+              {Array.from({ length: depth }).map((_, i) => (
+                <span
+                  key={i}
+                  className="absolute top-0 bottom-0 w-px bg-white/[0.05]"
+                  style={{ left: `${GUIDE_OFFSET + i * INDENT_STEP}px` }}
+                />
+              ))}
+
+              {node.dir ? (
+                <ChevronRight
+                  size={10}
+                  strokeWidth={2.5}
+                  className={`shrink-0 text-zinc-600 transition-transform duration-100 ${isOpen ? "rotate-90" : ""}`}
+                />
+              ) : (
+                <span className="w-2.5 shrink-0" />
+              )}
+              {node.dir ? (
+                isOpen ? (
+                  <FolderOpen size={12} className="shrink-0 text-accent-to/70" />
+                ) : (
+                  <Folder size={12} className="shrink-0 text-zinc-500" />
+                )
+              ) : (
+                <FileIcon size={12} className={`shrink-0 ${fileIconClass}`} />
+              )}
+              <span className="truncate text-[11.5px]">{node.name}</span>
+              {dirtyPaths.has(node.path) && <span className="ml-auto h-1.5 w-1.5 shrink-0 rounded-full bg-accent-to" />}
+            </div>
+            {node.dir && node.children && isOpen && (
+              <FileTree
+                nodes={node.children}
+                activePath={activePath}
+                dirtyPaths={dirtyPaths}
+                onSelect={onSelect}
+                collapsed={collapsed}
+                onToggle={onToggle}
+                depth={depth + 1}
+              />
+            )}
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------
+// Terminal tab: live shell_output, needs no backend change -- the data
+// already flows (plan §8 step 6). Plain rendering, no ANSI parsing yet
+// (deferred per the plan until real output volume/noise is visible).
+// ---------------------------------------------------------------------
+
+function TerminalTab({ lines }: { lines: TerminalLine[] }) {
+  const bottomRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ block: "end" });
+  }, [lines.length]);
+
+  return (
+    <div className="h-full overflow-auto bg-black/30 p-3 font-mono text-[12px] leading-relaxed">
+      {lines.length === 0 ? (
+        <p className="text-zinc-600">No shell output yet.</p>
+      ) : (
+        lines.map((line, i) => (
+          <span key={i} className={line.stream === "stderr" ? "text-rose-300/90" : "text-zinc-300"}>
+            {line.chunk}
+          </span>
+        ))
+      )}
+      <div ref={bottomRef} />
     </div>
   );
 }

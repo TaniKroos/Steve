@@ -81,9 +81,12 @@ export function AppShell() {
     setSessions((current) => current.map((s) => (s.id === id ? { ...s, ...patch } : s)));
   };
 
-  const { messages, liveStatus, send } = useSessionChat(selectedId, (prUrl, prNumber) => {
-    if (selectedId) patchSession(selectedId, { pr_url: prUrl, pr_number: prNumber });
-  });
+  const { messages, liveStatus, send, lastFileEdit, fileEditLog, terminalLines } = useSessionChat(
+    selectedId,
+    (prUrl, prNumber) => {
+      if (selectedId) patchSession(selectedId, { pr_url: prUrl, pr_number: prNumber });
+    },
+  );
 
   const [sandboxOpen, setSandboxOpen] = useState(true);
   const [showNewSession, setShowNewSession] = useState(false);
@@ -124,7 +127,15 @@ export function AppShell() {
           {sessions.length === 0 ? "Start a new session to get going." : "Select a session."}
         </div>
       )}
-      {selectedSession && sandboxOpen && <SandboxPanel session={selectedSession} onClose={() => setSandboxOpen(false)} />}
+      {selectedSession && sandboxOpen && (
+        <SandboxPanel
+          session={selectedSession}
+          onClose={() => setSandboxOpen(false)}
+          lastFileEdit={lastFileEdit}
+          fileEditLog={fileEditLog}
+          terminalLines={terminalLines}
+        />
+      )}
       {showNewSession && (
         <NewSessionModal
           repos={repos}

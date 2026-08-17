@@ -56,6 +56,16 @@ class ToolResult:
     # own `asyncio.Queue` when it's set (plan §7); the tool itself never
     # does the waiting.
     blocked: bool = False
+    # Only ever True for message_user with block_on_user_response=="DONE"
+    # -- the one explicit, model-driven signal that a session is actually
+    # finished and safe to tear down (plan §4's original
+    # BLOCK|DONE|NONE). Without this, SessionWorker has no way to tell
+    # "genuinely complete" apart from "the model stopped talking
+    # mid-task" -- both look identical (a turn with no tool_use) -- and
+    # has to treat every such turn as an implicit pause instead, which
+    # would leave finished sessions blocked forever with no reaper yet
+    # built to reclaim them.
+    done: bool = False
     # Structured form persisted to `tool_calls.output` -- defaults to
     # wrapping `content` when a tool has nothing richer to offer.
     output: dict | None = None
