@@ -108,6 +108,12 @@ export const api = {
   fileContent: (id: string, path: string) =>
     apiFetch<{ content: string }>(`/api/sessions/${id}/files/content?path=${encodeURIComponent(path)}`),
 
+  // The file's content as of HEAD -- the "before" half of Monaco's
+  // DiffEditor (claude/live-workspace-v2.md §4.1), which needs two full
+  // text blobs to diff itself rather than a unified patch string.
+  fileOriginal: (id: string, path: string) =>
+    apiFetch<{ content: string }>(`/api/sessions/${id}/files/original?path=${encodeURIComponent(path)}`),
+
   fileDiff: (id: string, path: string) =>
     apiFetch<{ diff: string }>(`/api/sessions/${id}/files/diff?path=${encodeURIComponent(path)}`),
 

@@ -8,7 +8,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { toChatMessages } from "./transform";
-import type { ChatMessage, FileEditEntry, SessionEvent, TerminalLine, ToolCall } from "../types";
+import type { ChatMessage, FileEditEntry, FileRemovedEntry, SessionEvent, TerminalLine, ToolCall } from "../types";
 
 export function useSessionChat(sessionId: string | null, onSessionUpdate: (prUrl: string, prNumber: number) => void) {
   const [history, setHistory] = useState<ChatMessage[]>([]);
@@ -25,6 +25,11 @@ export function useSessionChat(sessionId: string | null, onSessionUpdate: (prUrl
   // just change" without re-scanning the whole log on every event.
   const [fileEditLog, setFileEditLog] = useState<FileEditEntry[]>([]);
   const [lastFileEdit, setLastFileEdit] = useState<FileEditEntry | null>(null);
+  // Deletions detected by the git-status-diff sync (claude/live-workspace-v2.md
+  // §3) -- kept separate from fileEditLog/lastFileEdit rather than
+  // folded in, since a removal needs materially different handling
+  // downstream (drop from the tree, close the tab) than an edit does.
+  const [lastFileRemoved, setLastFileRemoved] = useState<FileRemovedEntry | null>(null);
   const [terminalLines, setTerminalLines] = useState<TerminalLine[]>([]);
 
   // `onSessionUpdate` is recreated every AppShell render -- routing it
@@ -42,6 +47,7 @@ export function useSessionChat(sessionId: string | null, onSessionUpdate: (prUrl
     setLiveStatus(null);
     setFileEditLog([]);
     setLastFileEdit(null);
+    setLastFileRemoved(null);
     setTerminalLines([]);
     if (!sessionId) {
       setHistory([]);
@@ -140,6 +146,16 @@ export function useSessionChat(sessionId: string | null, onSessionUpdate: (prUrl
           setFileEditLog((log) => [...log, { path: event.path, tool: event.tool, at: Date.now() }]);
           break;
 
+        case "file_removed":
+          setLastFileRemoved({ path: event.path, at: Date.now() });
+          // Also counted as Files-tab activity (the unread-dot logic in
+          // SandboxPanel just counts fileEditLog's length) -- a deletion
+          // is exactly as much "something happened" as an edit is. The
+          // removed path won't render in the tree anymore regardless, so
+          // tagging it here has no other effect.
+          setFileEditLog((log) => [...log, { path: event.path, tool: "removed", at: Date.now() }]);
+          break;
+
         case "message_complete":
           setDraft((current) => {
             if (current) setHistory((h) => [...h, { ...current, streaming: false }]);
@@ -185,6 +201,7 @@ export function useSessionChat(sessionId: string | null, onSessionUpdate: (prUrl
     send,
     fileEditLog,
     lastFileEdit,
+    lastFileRemoved,
     terminalLines,
   };
 }

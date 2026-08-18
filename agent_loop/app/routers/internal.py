@@ -135,6 +135,25 @@ async def read_file_content(
     return {"content": content}
 
 
+@router.get("/{session_id}/files/original")
+async def read_file_original(
+    session_id: uuid.UUID,
+    path: str,
+    worker_registry: WorkerRegistry = Depends(get_worker_registry),
+) -> dict:
+    """The file's content as of HEAD -- the "before" half of Monaco's
+    DiffEditor (claude/live-workspace-v2.md §4.1). Always empty-string
+    rather than 404 for a path that's new since the last commit (see
+    SessionWorker.file_content_at_ref) -- there's nothing exceptional
+    about that case from this endpoint's point of view."""
+    worker = _get_active_worker(session_id, worker_registry)
+    try:
+        content = await worker.file_content_at_ref(path)
+    except SandboxUnreachableError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"content": content}
+
+
 @router.get("/{session_id}/files/diff")
 async def read_file_diff(
     session_id: uuid.UUID,

@@ -1,8 +1,9 @@
-// Live workspace view (claude/live-workspace-view-plan.md). Two tabs,
-// switched manually only -- no auto-switching (plan §6): both keep
-// updating live off the same SSE connection underneath regardless of
-// which one is on screen (`useSessionChat.ts`), but the user decides
-// when to look at which. Files/content/diffs are pull-only, fetched via
+// Live workspace view (claude/live-workspace-view-plan.md, editor
+// surface rebuilt per claude/live-workspace-v2.md). Two tabs, switched
+// manually only -- no auto-switching (plan §6): both keep updating live
+// off the same SSE connection underneath regardless of which one is on
+// screen (`useSessionChat.ts`), but the user decides when to look at
+// which. Files/content/diffs are pull-only, fetched via
 // `useSandboxWorkspace.ts` -- never pushed over SSE (plan §2/§3).
 import { useEffect, useRef, useState } from "react";
 import {
@@ -25,11 +26,10 @@ import {
   Terminal as TerminalIcon,
   X,
 } from "lucide-react";
-import { PrismAsync as SyntaxHighlighter } from "react-syntax-highlighter";
-import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
+import { DiffEditor, Editor } from "@monaco-editor/react";
 import { useResizable } from "../lib/useResizable";
 import { useSandboxWorkspace } from "../lib/useSandboxWorkspace";
-import type { FileEditEntry, Session, TerminalLine } from "../types";
+import type { FileEditEntry, FileRemovedEntry, Session, TerminalLine } from "../types";
 import { DiffLines } from "./DiffLines";
 
 type Tab = "files" | "terminal";
@@ -41,24 +41,52 @@ const EXPLORER_MIN = 140;
 const EXPLORER_MAX = 480;
 const EXPLORER_DEFAULT = 200;
 
+// Read-only everywhere -- this is a viewer, not a co-editor (v2 plan
+// §2: CloudAgent is a supervised IDE, the agent edits and the user
+// reviews/redirects through chat, never types directly into a file).
+const EDITOR_OPTIONS = {
+  readOnly: true,
+  domReadOnly: true,
+  minimap: { enabled: true },
+  fontSize: 12,
+  scrollBeyondLastLine: false,
+  // Re-measures on container resize automatically -- load-bearing given
+  // the panel and the Explorer column are both drag-resizable.
+  automaticLayout: true,
+};
+
 export function SandboxPanel({
   session,
   onClose,
   lastFileEdit,
+  lastFileRemoved,
   fileEditLog,
   terminalLines,
 }: {
   session: Session;
   onClose: () => void;
   lastFileEdit: FileEditEntry | null;
+  lastFileRemoved: FileRemovedEntry | null;
   fileEditLog: FileEditEntry[];
   terminalLines: TerminalLine[];
 }) {
   const [tab, setTab] = useState<Tab>("files");
   const live = session.status === "running" || session.status === "blocked";
 
-  const { files, filesUnavailable, openPath, openContent, openDiff, openLoading, openFile, reviewDiff, refresh } =
-    useSandboxWorkspace(session.id, session.status, lastFileEdit);
+  const {
+    files,
+    filesUnavailable,
+    refresh,
+    tabs,
+    activePath,
+    activeContent,
+    activeOriginal,
+    activeLoading,
+    deletedNotice,
+    openFile,
+    closeTab,
+    reviewDiff,
+  } = useSandboxWorkspace(session.id, session.status, lastFileEdit, lastFileRemoved);
 
   // The panel is docked to the right edge of the screen -- its own drag
   // handle lives on its *left* edge, so growing it means dragging left
@@ -134,11 +162,14 @@ export function SandboxPanel({
             files={files}
             filesUnavailable={filesUnavailable}
             dirtyPaths={dirtyPaths}
-            openPath={openPath}
-            openContent={openContent}
-            openDiff={openDiff}
-            openLoading={openLoading}
+            tabs={tabs}
+            activePath={activePath}
+            activeContent={activeContent}
+            activeOriginal={activeOriginal}
+            activeLoading={activeLoading}
+            deletedNotice={deletedNotice}
             openFile={openFile}
+            closeTab={closeTab}
             reviewDiff={session.status === "blocked" ? reviewDiff : null}
             onRefresh={refresh}
           />
@@ -205,10 +236,12 @@ function ResizeHandle({
 }
 
 // ---------------------------------------------------------------------
-// Files tab: real file tree (git ls-files, via useSandboxWorkspace) +
-// syntax-highlighted content + uncommitted diff for whichever file is
-// open, plus a pre-PR full-diff review banner when the session is
-// blocked awaiting confirmation (plan §4/§7).
+// Files tab: real file tree (git ls-files, via useSandboxWorkspace),
+// a multi-tab Monaco viewer (read-only) for open files -- rendering a
+// real side-by-side DiffEditor in place of the plain view whenever the
+// active tab has uncommitted changes -- plus a pre-PR full-diff review
+// banner when the session is blocked awaiting confirmation (plan
+// §4/§7; editor surface per claude/live-workspace-v2.md §4.1).
 // ---------------------------------------------------------------------
 
 interface TreeNode {
@@ -258,11 +291,18 @@ function allDirPaths(nodes: TreeNode[]): string[] {
   return paths;
 }
 
+// Monaco's built-in language ids -- a real, different vocabulary from
+// Prism's (the syntax highlighter this replaced), e.g. "shell" not
+// "bash", "html" not "markup". No dedicated "toml" language ships with
+// Monaco; "ini" is a reasonable stand-in (both are line-oriented
+// key=value/[section] formats).
 const EXTENSION_LANGUAGE: Record<string, string> = {
   ts: "typescript",
-  tsx: "tsx",
+  tsx: "typescript",
   js: "javascript",
-  jsx: "jsx",
+  jsx: "javascript",
+  mjs: "javascript",
+  cjs: "javascript",
   py: "python",
   go: "go",
   rs: "rust",
@@ -272,17 +312,23 @@ const EXTENSION_LANGUAGE: Record<string, string> = {
   yml: "yaml",
   yaml: "yaml",
   md: "markdown",
+  mdx: "markdown",
   css: "css",
   scss: "scss",
-  html: "markup",
-  sh: "bash",
+  less: "less",
+  html: "html",
+  htm: "html",
+  sh: "shell",
+  bash: "shell",
+  zsh: "shell",
   sql: "sql",
-  toml: "toml",
+  toml: "ini",
+  ini: "ini",
 };
 
 function languageForPath(path: string): string {
   const ext = path.split(".").pop()?.toLowerCase() ?? "";
-  return EXTENSION_LANGUAGE[ext] ?? "text";
+  return EXTENSION_LANGUAGE[ext] ?? "plaintext";
 }
 
 // File-type icon + color, keyed off extension (with a couple of
@@ -353,11 +399,14 @@ function FilesTab({
   files,
   filesUnavailable,
   dirtyPaths,
-  openPath,
-  openContent,
-  openDiff,
-  openLoading,
+  tabs,
+  activePath,
+  activeContent,
+  activeOriginal,
+  activeLoading,
+  deletedNotice,
   openFile,
+  closeTab,
   reviewDiff,
   onRefresh,
 }: {
@@ -365,11 +414,14 @@ function FilesTab({
   files: string[];
   filesUnavailable: boolean;
   dirtyPaths: Set<string>;
-  openPath: string | null;
-  openContent: string | null;
-  openDiff: string | null;
-  openLoading: boolean;
+  tabs: string[];
+  activePath: string | null;
+  activeContent: string | null;
+  activeOriginal: string | null;
+  activeLoading: boolean;
+  deletedNotice: string | null;
   openFile: (path: string) => void;
+  closeTab: (path: string) => void;
   reviewDiff: string | null;
   onRefresh: () => void;
 }) {
@@ -398,6 +450,11 @@ function FilesTab({
     max: EXPLORER_MAX,
     storageKey: "cloudagent:explorer-width",
   });
+
+  // A real diff (not just "has uncommitted changes" in the abstract) --
+  // both halves have to have actually loaded, and differ, for the
+  // DiffEditor to make sense over the plain viewer.
+  const showDiff = activeOriginal !== null && activeContent !== null && activeOriginal !== activeContent;
 
   return (
     <div className="flex h-full flex-col text-[12px]">
@@ -440,7 +497,7 @@ function FilesTab({
           ) : (
             <FileTree
               nodes={tree}
-              activePath={openPath}
+              activePath={activePath}
               dirtyPaths={dirtyPaths}
               onSelect={openFile}
               collapsed={collapsed}
@@ -451,49 +508,74 @@ function FilesTab({
         </div>
 
         <div className="flex min-w-0 flex-1 flex-col">
-          {openPath && (
-            <div className="flex shrink-0 items-center border-b border-white/[0.06] bg-black/10">
-              <div className="flex items-center gap-1.5 border-r border-t-2 border-t-accent-to border-white/[0.06] bg-black/20 px-3 py-1.5 text-[11.5px] text-zinc-200">
-                {(() => {
-                  const { Icon, className } = fileIconFor(openPath.split("/").pop() ?? openPath);
-                  return <Icon size={11} className={className} />;
-                })()}
-                <span className="truncate">{openPath}</span>
-              </div>
+          {tabs.length > 0 && (
+            <div className="flex shrink-0 items-center overflow-x-auto border-b border-white/[0.06] bg-black/10">
+              {tabs.map((path) => {
+                const { Icon: TabIcon, className: tabIconClass } = fileIconFor(path.split("/").pop() ?? path);
+                const isActive = path === activePath;
+                return (
+                  <div
+                    key={path}
+                    onClick={() => openFile(path)}
+                    className={`group flex shrink-0 cursor-pointer items-center gap-1.5 border-r border-b-2 border-white/[0.06] px-3 py-1.5 text-[11.5px] ${
+                      isActive
+                        ? "border-b-accent-to bg-black/20 text-zinc-200"
+                        : "border-b-transparent text-zinc-500 hover:bg-white/[0.02] hover:text-zinc-300"
+                    }`}
+                  >
+                    <TabIcon size={11} className={tabIconClass} />
+                    <span className="max-w-[140px] truncate">{path.split("/").pop()}</span>
+                    {dirtyPaths.has(path) && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent-to" />}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        closeTab(path);
+                      }}
+                      className="ml-0.5 shrink-0 rounded p-0.5 text-zinc-600 opacity-0 transition hover:bg-white/10 hover:text-zinc-200 group-hover:opacity-100"
+                    >
+                      <X size={10} />
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           )}
 
-          <div className="flex-1 overflow-auto bg-black/20">
-            {!openPath ? (
-              <p className="p-4 text-[12px] text-zinc-600">Select a file to view it.</p>
-            ) : openLoading ? (
+          <div className="relative min-h-0 flex-1 bg-black/20">
+            {!activePath ? (
+              <p className="p-4 text-[12px] text-zinc-600">
+                {deletedNotice ? (
+                  <>
+                    <span className="text-zinc-400">{deletedNotice}</span> was deleted.
+                  </>
+                ) : (
+                  "Select a file to view it."
+                )}
+              </p>
+            ) : activeLoading ? (
               <div className="flex items-center gap-2 p-4 text-[12px] text-zinc-500">
                 <Loader2 size={13} className="animate-spin" />
                 loading...
               </div>
+            ) : activeContent === null ? (
+              <p className="p-4 text-[12px] text-zinc-600">Couldn't load this file.</p>
+            ) : showDiff ? (
+              <DiffEditor
+                key={activePath}
+                original={activeOriginal ?? ""}
+                modified={activeContent}
+                language={languageForPath(activePath)}
+                theme="vs-dark"
+                options={{ ...EDITOR_OPTIONS, renderSideBySide: true }}
+              />
             ) : (
-              <>
-                {openDiff && (
-                  <div className="border-b border-white/[0.06]">
-                    <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
-                      Uncommitted changes
-                    </div>
-                    <pre className="max-h-40 overflow-auto pb-2 font-mono text-[11.5px] leading-relaxed">
-                      <DiffLines text={openDiff} />
-                    </pre>
-                  </div>
-                )}
-                {openContent !== null && (
-                  <SyntaxHighlighter
-                    language={languageForPath(openPath)}
-                    style={oneDark}
-                    customStyle={{ margin: 0, background: "transparent", fontSize: "12px", padding: "12px" }}
-                    showLineNumbers
-                  >
-                    {openContent}
-                  </SyntaxHighlighter>
-                )}
-              </>
+              <Editor
+                path={activePath}
+                value={activeContent}
+                language={languageForPath(activePath)}
+                theme="vs-dark"
+                options={EDITOR_OPTIONS}
+              />
             )}
           </div>
         </div>
@@ -611,13 +693,22 @@ function FileTree({
 // ---------------------------------------------------------------------
 
 function TerminalTab({ lines }: { lines: TerminalLine[] }) {
-  const bottomRef = useRef<HTMLDivElement>(null);
+  // Scrolls this container's own scrollTop directly -- deliberately not
+  // `element.scrollIntoView()`, which walks up *every* scrollable
+  // ancestor (including AppShell's root flex row, an overflow-hidden
+  // container that's a legitimate scroll target even with no visible
+  // scrollbar) and was actually scrolling that ancestor sideways to
+  // bring this element into view, permanently shifting the whole page
+  // layout the first time the Terminal tab mounted. Scoping the scroll
+  // to exactly this element removes any chance of touching an ancestor.
+  const containerRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ block: "end" });
+    const el = containerRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
   }, [lines.length]);
 
   return (
-    <div className="h-full overflow-auto bg-black/30 p-3 font-mono text-[12px] leading-relaxed">
+    <div ref={containerRef} className="h-full overflow-auto bg-black/30 p-3 font-mono text-[12px] leading-relaxed">
       {lines.length === 0 ? (
         <p className="text-zinc-600">No shell output yet.</p>
       ) : (
@@ -627,7 +718,6 @@ function TerminalTab({ lines }: { lines: TerminalLine[] }) {
           </span>
         ))
       )}
-      <div ref={bottomRef} />
     </div>
   );
 }

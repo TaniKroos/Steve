@@ -81,7 +81,7 @@ export function AppShell() {
     setSessions((current) => current.map((s) => (s.id === id ? { ...s, ...patch } : s)));
   };
 
-  const { messages, liveStatus, send, lastFileEdit, fileEditLog, terminalLines } = useSessionChat(
+  const { messages, liveStatus, send, lastFileEdit, lastFileRemoved, fileEditLog, terminalLines } = useSessionChat(
     selectedId,
     (prUrl, prNumber) => {
       if (selectedId) patchSession(selectedId, { pr_url: prUrl, pr_number: prNumber });
@@ -132,6 +132,7 @@ export function AppShell() {
           session={selectedSession}
           onClose={() => setSandboxOpen(false)}
           lastFileEdit={lastFileEdit}
+          lastFileRemoved={lastFileRemoved}
           fileEditLog={fileEditLog}
           terminalLines={terminalLines}
         />

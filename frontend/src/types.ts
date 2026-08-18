@@ -124,6 +124,7 @@ export type SessionEvent =
   | { type: "tool_call"; id: string; tool: string; status: ToolCallStatus; summary: string }
   | { type: "shell_output"; shell_id: string | null; stream: "stdout" | "stderr"; chunk: string }
   | { type: "file_edit"; path: string; tool: string }
+  | { type: "file_removed"; path: string }
   | { type: "message_complete" }
   | { type: "status"; text: string }
   | { type: "done"; pr_url: string; pr_number: number };
@@ -138,6 +139,15 @@ export interface FileEditEntry {
   path: string;
   tool: string;
   at: number; // Date.now(), for React state identity / ordering only
+}
+
+// One `file_removed` SSE event -- deletions detected by the
+// git-status-diff sync (claude/live-workspace-v2.md §3), never by a
+// tracked editor tool (there is no delete_file tool -- see
+// claude/architecture-plan.md §4).
+export interface FileRemovedEntry {
+  path: string;
+  at: number;
 }
 
 // One `shell_output` chunk, kept for the Terminal tab's own buffer --

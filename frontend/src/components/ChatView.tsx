@@ -26,7 +26,15 @@ export function ChatView({
   const canReply = session.status === "blocked";
 
   return (
-    <div className="relative flex h-screen flex-1 flex-col bg-canvas">
+    // min-w-0 is load-bearing, not decorative: without it this flex item
+    // refuses to shrink below its content's intrinsic width (long
+    // unwrapped tool-call command text, mainly) once Sidebar + this +
+    // SandboxPanel's combined width exceeds the viewport -- which forces
+    // the whole AppShell row to silently overflow (clipped by its own
+    // overflow-hidden, so invisible at rest) instead of this column
+    // actually shrinking to its allotted space the way flex-1 implies it
+    // should.
+    <div className="relative flex h-screen min-w-0 flex-1 flex-col bg-canvas">
       <div className="pointer-events-none absolute inset-x-0 top-0 h-64 bg-gradient-to-b from-blue-700/[0.07] to-transparent" />
 
       <ChatHeader session={session} sandboxOpen={sandboxOpen} onToggleSandbox={onToggleSandbox} />

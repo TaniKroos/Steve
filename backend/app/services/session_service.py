@@ -165,6 +165,10 @@ class SessionService:
         await self.get_session(session_id, user)
         return await self._agent_loop.read_file(session_id, path)
 
+    async def file_original(self, session_id: uuid.UUID, user: User, path: str) -> str:
+        await self.get_session(session_id, user)
+        return await self._agent_loop.file_original(session_id, path)
+
     async def file_diff(self, session_id: uuid.UUID, user: User, path: str) -> str:
         await self.get_session(session_id, user)
         return await self._agent_loop.file_diff(session_id, path)

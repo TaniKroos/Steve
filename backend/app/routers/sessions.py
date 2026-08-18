@@ -95,6 +95,16 @@ async def get_file_content(
     return {"content": await service.read_file(session_id, user, path)}
 
 
+@router.get("/{session_id}/files/original")
+async def get_file_original(
+    session_id: uuid.UUID,
+    path: str,
+    user: User = Depends(get_current_user),
+    service: SessionService = Depends(get_session_service),
+) -> dict:
+    return {"content": await service.file_original(session_id, user, path)}
+
+
 @router.get("/{session_id}/files/diff")
 async def get_file_diff(
     session_id: uuid.UUID,

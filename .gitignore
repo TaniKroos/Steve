@@ -2,6 +2,7 @@
 /.claude
 /.Arch
 /claude
+/deployment
 # Python
 __pycache__/
 *.pyc
@@ -23,3 +24,5 @@ secrets/
 .vscode/
 .idea/
 *.log
+*/.vercel
+.mcp.json

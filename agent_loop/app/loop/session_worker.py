@@ -52,6 +52,13 @@ _MAX_SANDBOX_RECOVERY_ATTEMPTS = 2
 # event carries no diff body (a prior draft did, and pushed it to every
 # connected browser tab regardless of who was watching).
 _FILE_WRITE_TOOLS = frozenset({"str_replace", "create_file", "insert_at_line", "undo_edit"})
+# Shell tools whose completion might have changed files on disk without
+# going through one of the tools above -- `npm install` writing a
+# lockfile, a formatter rewriting a file, a codegen script. Drives the
+# git-status-diff sync below (claude/live-workspace-v2.md §3), which is
+# how those changes still reach the browser without a raw filesystem
+# watch.
+_SHELL_SYNC_TOOLS = frozenset({"shell_exec", "shell_view"})
 
 
 @dataclass
@@ -125,6 +132,15 @@ class SessionWorker:
         self.incoming: asyncio.Queue[str] = asyncio.Queue()
         self._history: list[dict] = []
         self._tool_context = self._build_tool_context()
+        # {path: git status code} as of the last sync -- seeded in
+        # _connect_and_clone, updated by _sync_files_from_git_status.
+        # Purely an in-memory baseline for diffing against, same "narrow
+        # edge case, not worth persisting" reasoning as EditorTool's undo
+        # stack: losing it on a crash-recovery rehydrate just means the
+        # next shell-triggered sync re-announces whatever's currently
+        # dirty, which is harmless (the frontend's file_edit handling is
+        # already idempotent).
+        self._last_status: dict[str, str] = {}
 
     async def run(self, initial_message: str | None) -> None:
         """`initial_message=None` means this is a crash-recovery resume
@@ -333,7 +349,71 @@ class SessionWorker:
                 {"type": "file_edit", "path": result.output["path"], "tool": tool_use.name},
             )
 
+        if tool_use.name in _SHELL_SYNC_TOOLS:
+            # Not gated on `result.is_error` on purpose -- a command can
+            # exit non-zero and still have written real files before
+            # failing (e.g. `npm install && npm run build` where install
+            # succeeded), and those changes are just as real as a
+            # successful command's.
+            await self._sync_files_from_git_status(tool_use.name)
+
         return result
+
+    async def _git_status_snapshot(self) -> dict[str, str]:
+        """`git status --porcelain --untracked-files=all`, parsed into
+        {path: status_code} -- the detection mechanism for the live-sync
+        gap a raw filesystem watch would otherwise be needed for
+        (claude/live-workspace-v2.md §3). git already gives us exactly
+        the added/modified/deleted/untracked paths, respecting
+        .gitignore, in one cheap call -- no watcher, no reinventing the
+        filtering git already does."""
+        result = await self._sandbox.run_command(
+            "git status --porcelain --untracked-files=all", cwd=_REPO_DIR
+        )
+        snapshot: dict[str, str] = {}
+        for line in result.stdout.splitlines():
+            if len(line) < 4:
+                continue
+            code, rest = line[:2], line[3:]
+            if " -> " in rest:
+                # A detected rename -- modeled as the old path
+                # disappearing and the new one appearing, rather than
+                # inventing a third SSE event type just for this.
+                old_path, new_path = rest.split(" -> ", 1)
+                snapshot[old_path] = "D "
+                snapshot[new_path] = "A "
+            else:
+                snapshot[rest] = code
+        return snapshot
+
+    async def _sync_files_from_git_status(self, tool_name: str) -> None:
+        """Diffs a fresh git-status snapshot against `self._last_status`
+        and publishes exactly the paths that actually changed since the
+        last check -- new/modified paths as the existing `file_edit`
+        event (the frontend's tree-append and open-file-refresh logic
+        already handle that shape, no frontend change needed for this
+        half), deleted paths as a new `file_removed` event. Paths that
+        merely stopped being dirty (e.g. committed) are correctly not
+        reported at all -- they were never a gap, the tree already has
+        them from the initial `git ls-files` population."""
+        try:
+            snapshot = await self._git_status_snapshot()
+        except SandboxUnreachableError:
+            raise
+        except Exception:  # noqa: BLE001 -- best-effort sync, never worth failing the turn over
+            logger.warning("session %s: git status sync failed, skipping", self.session_id, exc_info=True)
+            return
+
+        for path, code in snapshot.items():
+            if self._last_status.get(path) == code:
+                continue  # unchanged since the last check
+            if "D" in code:
+                await self._events.publish(self.session_id, {"type": "file_removed", "path": path})
+            else:
+                await self._events.publish(
+                    self.session_id, {"type": "file_edit", "path": path, "tool": tool_name}
+                )
+        self._last_status = snapshot
 
     # ------------------------------------------------------------------
     # Sandbox lifecycle
@@ -368,6 +448,7 @@ class SessionWorker:
         # Re-running `git clone` into that directory would just fail.
         if await self._sandbox.file_exists(f"{_REPO_DIR}/.git"):
             await self._events.publish(self.session_id, {"type": "status", "text": "reconnecting to existing checkout..."})
+            self._last_status = await self._git_status_snapshot()
             return
 
         await self._events.publish(self.session_id, {"type": "status", "text": "cloning repository..."})
@@ -383,6 +464,11 @@ class SessionWorker:
             f"git -C {shlex.quote(_REPO_DIR)} config user.name 'CloudAgent'",
             timeout=10,
         )
+        # Baseline for the git-status-diff sync (§ above) -- a fresh
+        # clone is always clean, but seeding explicitly rather than
+        # assuming `{}` keeps this correct if that ever stops being true
+        # (e.g. a template repo with a dirty starting state).
+        self._last_status = await self._git_status_snapshot()
 
     async def _ensure_gh_cli(self) -> None:
         check = await self._sandbox.run_command("command -v gh", timeout=10)
@@ -453,6 +539,18 @@ class SessionWorker:
         (routers/internal.py) to turn into a 404."""
         resolved = path if path.startswith("/") else f"{_REPO_DIR}/{path}"
         return await self._sandbox.read_file(resolved)
+
+    async def file_content_at_ref(self, path: str, ref: str = "HEAD") -> str:
+        """The file's content as of `ref` (defaults to HEAD, the last
+        commit) -- the "before" half of a real Monaco `DiffEditor`
+        comparison (claude/live-workspace-v2.md §4.1), which diffs two
+        full text blobs itself rather than consuming a unified patch
+        string the way `file_diff`/`DiffLines` did. Empty string for a
+        path that doesn't exist at that ref (a file created since the
+        last commit) -- correct for diffing purposes: Monaco then shows
+        the whole file as newly added, which is exactly what it is."""
+        result = await self._sandbox.run_command(f"git show {shlex.quote(ref)}:{shlex.quote(path)}", cwd=_REPO_DIR)
+        return result.stdout if result.exit_code == 0 else ""
 
     async def file_diff(self, path: str) -> str:
         """Changes to one file since its last commit. Recomputed fresh on

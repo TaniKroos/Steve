@@ -164,6 +164,16 @@ class AgentLoopClient:
         response.raise_for_status()
         return response.json()["content"]
 
+    async def file_original(self, session_id: uuid.UUID, path: str) -> str:
+        base_url = await self._owner_base_url(session_id)
+        response = await self._http.get(
+            f"{base_url}/internal/sessions/{session_id}/files/original",
+            params={"path": path},
+            headers={"X-Internal-Secret": self._secret},
+        )
+        response.raise_for_status()
+        return response.json()["content"]
+
     async def file_diff(self, session_id: uuid.UUID, path: str) -> str:
         base_url = await self._owner_base_url(session_id)
         response = await self._http.get(
