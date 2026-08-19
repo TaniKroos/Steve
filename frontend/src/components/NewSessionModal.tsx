@@ -99,7 +99,7 @@ export function NewSessionModal({
             </div>
 
             {error && (
-              <p className="rounded-lg border border-amber-500/20 bg-amber-500/[0.06] px-3 py-2.5 text-[12.5px] leading-relaxed text-amber-200/90">
+              <p className="rounded-lg border border-white/15 bg-white/[0.06] px-3 py-2.5 text-[12.5px] leading-relaxed text-zinc-200">
                 {error}
               </p>
             )}
@@ -107,7 +107,7 @@ export function NewSessionModal({
             <button
               onClick={handleSubmit}
               disabled={submitting || !repoId || !message.trim()}
-              className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-br from-accent-from via-accent-via to-accent-to py-2.5 text-sm font-semibold text-white transition disabled:opacity-40 enabled:hover:scale-[1.01]"
+              className="flex w-full items-center justify-center gap-2 rounded-xl bg-zinc-100 py-2.5 text-sm font-semibold text-zinc-900 transition disabled:opacity-40 enabled:hover:scale-[1.01] enabled:hover:bg-white"
             >
               {submitting ? (
                 <Loader2 size={16} className="animate-spin" />

@@ -14,13 +14,13 @@ export function DiffLines({ text }: { text: string }) {
 
 function DiffLine({ line }: { line: string }) {
   if (line.startsWith("+") && !line.startsWith("+++")) {
-    return <div className="bg-emerald-500/[0.08] px-3 text-emerald-300/90">{line}</div>;
+    return <div className="bg-white/[0.08] px-3 text-zinc-200">{line}</div>;
   }
   if (line.startsWith("-") && !line.startsWith("---")) {
-    return <div className="bg-rose-500/[0.08] px-3 text-rose-300/90">{line}</div>;
+    return <div className="bg-zinc-500/[0.12] px-3 text-zinc-300">{line}</div>;
   }
   if (line.startsWith("FAILED") || line.toLowerCase().includes("error")) {
-    return <div className="px-3 text-rose-300/90">{line}</div>;
+    return <div className="px-3 text-zinc-300">{line}</div>;
   }
   return <div className="px-3 text-zinc-400">{line || " "}</div>;
 }

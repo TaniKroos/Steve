@@ -89,6 +89,7 @@ export function AppShell() {
   );
 
   const [sandboxOpen, setSandboxOpen] = useState(true);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [showNewSession, setShowNewSession] = useState(false);
 
   const uiSessions = sessions.map((s) => toUiSession(s, repos, fallbackTitles.current[s.id]));
@@ -112,6 +113,8 @@ export function AppShell() {
         onLogout={handleLogout}
         repos={repos}
         onNewSession={() => setShowNewSession(true)}
+        collapsed={sidebarCollapsed}
+        onToggleCollapse={() => setSidebarCollapsed((collapsed) => !collapsed)}
       />
       {selectedSession ? (
         <ChatView

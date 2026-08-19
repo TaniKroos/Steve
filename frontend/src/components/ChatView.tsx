@@ -35,7 +35,7 @@ export function ChatView({
     // actually shrinking to its allotted space the way flex-1 implies it
     // should.
     <div className="relative flex h-screen min-w-0 flex-1 flex-col bg-canvas">
-      <div className="pointer-events-none absolute inset-x-0 top-0 h-64 bg-gradient-to-b from-blue-700/[0.07] to-transparent" />
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-64 bg-gradient-to-b from-white/[0.04] to-transparent" />
 
       <ChatHeader session={session} sandboxOpen={sandboxOpen} onToggleSandbox={onToggleSandbox} />
 

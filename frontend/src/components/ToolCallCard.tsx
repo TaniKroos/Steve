@@ -94,13 +94,13 @@ function StatusIcon({ status }: { status: ToolCall["status"] }) {
   }
   if (status === "error") {
     return (
-      <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-rose-500/15 text-rose-400">
+      <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-zinc-500/15 text-zinc-300">
         <X size={10} strokeWidth={3} />
       </span>
     );
   }
   return (
-    <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-400">
+    <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-white/10 text-zinc-200">
       <Check size={10} strokeWidth={3} />
     </span>
   );
