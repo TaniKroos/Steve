@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChevronRight, GitBranch, LogOut, Plus, Search } from "lucide-react";
+import { ChevronRight, GitBranch, LogOut, PanelLeftClose, PanelLeftOpen, Plus, Search } from "lucide-react";
 import { api } from "../lib/api";
 import { timeAgo } from "../lib/format";
 import type { CurrentUser, GithubRepo, Session } from "../types";
@@ -15,6 +15,8 @@ export function Sidebar({
   onLogout,
   repos,
   onNewSession,
+  collapsed,
+  onToggleCollapse,
 }: {
   sessions: Session[];
   activeId: string | null;
@@ -23,19 +25,55 @@ export function Sidebar({
   onLogout: () => void;
   repos: GithubRepo[];
   onNewSession: () => void;
+  collapsed: boolean;
+  onToggleCollapse: () => void;
 }) {
   const initials = user.github_login.slice(0, 2).toUpperCase();
   const [reposOpen, setReposOpen] = useState(true);
   return (
-    <aside className="flex h-screen w-[300px] shrink-0 flex-col border-r border-white/[0.06] bg-surface">
-      <div className="flex items-center justify-between px-4 pb-4 pt-5">
-        <Logo size="sm" />
+    <aside
+      className={`flex h-screen shrink-0 flex-col border-r border-white/[0.06] bg-surface transition-[width] duration-200 ${
+        collapsed ? "w-[68px]" : "w-[300px]"
+      }`}
+    >
+      <div className={`flex items-center pb-4 pt-5 ${collapsed ? "justify-center px-2" : "justify-between px-4"}`}>
+        {!collapsed && <Logo size="sm" />}
+        <button
+          onClick={onToggleCollapse}
+          title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          className="flex h-8 w-8 items-center justify-center rounded-lg text-zinc-500 transition hover:bg-white/[0.06] hover:text-zinc-200"
+        >
+          {collapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
+        </button>
       </div>
+
+      {collapsed ? (
+        <div className="flex flex-col items-center gap-3 px-2">
+          <button
+            onClick={onNewSession}
+            title="New session"
+            aria-label="New session"
+            className="flex h-9 w-9 items-center justify-center rounded-xl bg-zinc-100 text-zinc-900 transition hover:bg-white active:scale-[0.95]"
+          >
+            <Plus size={18} strokeWidth={2.5} />
+          </button>
+          <button
+            onClick={onToggleCollapse}
+            title="Expand sidebar"
+            aria-label="Expand sidebar"
+            className="flex h-9 w-9 items-center justify-center rounded-lg text-zinc-500 transition hover:bg-white/[0.06] hover:text-zinc-200"
+          >
+            <ChevronRight size={18} />
+          </button>
+        </div>
+      ) : (
+        <>
 
       <div className="px-3">
         <button
           onClick={onNewSession}
-          className="group flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-br from-accent-from via-accent-via to-accent-to px-3 py-2.5 text-sm font-semibold text-white shadow-[0_4px_20px_-6px_rgba(47,111,237,0.45)] transition-transform hover:scale-[1.015] active:scale-[0.985]"
+          className="group flex w-full items-center justify-center gap-2 rounded-xl bg-zinc-100 px-3 py-2.5 text-sm font-semibold text-zinc-900 shadow-[0_4px_20px_-6px_rgba(255,255,255,0.18)] transition-transform hover:scale-[1.015] hover:bg-white active:scale-[0.985]"
         >
           <Plus size={16} strokeWidth={2.5} />
           New session
@@ -176,6 +214,8 @@ export function Sidebar({
           <LogOut size={15} className="shrink-0 text-zinc-600 group-hover:text-zinc-300" />
         </button>
       </div>
+        </>
+      )}
     </aside>
   );
 }
