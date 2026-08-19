@@ -9,9 +9,14 @@
   --color-surface-2: #121219;
   --color-edge: #1c1c26;
 
-  --color-accent-from: #3f3f46;
-  --color-accent-via: #71717a;
-  --color-accent-to: #f4f4f5;
+  /* Muted slate-blue, not the original saturated blue -- brings real hue
+     back (per user request, after the monochrome pass removed it
+     entirely) without recreating the harsh-brightness problem the app
+     had before: the lightest stop (--color-accent-to) tops out at
+     blue-300-ish, not near-white. */
+  --color-accent-from: #334155;
+  --color-accent-via: #64748b;
+  --color-accent-to: #93c5fd;
 
   --animate-pulse-slow: pulse-slow 3s ease-in-out infinite;
   --animate-fade-up: fade-up 0.5s ease both;

@@ -79,7 +79,7 @@ export function Sidebar({
       <div className="px-3">
         <button
           onClick={onNewSession}
-          className="group flex w-full items-center justify-center gap-2 rounded-xl bg-zinc-200 px-3 py-2.5 text-sm font-semibold text-zinc-900 shadow-[0_4px_20px_-6px_rgba(255,255,255,0.18)] transition-[transform,background-color] hover:scale-[1.015] hover:bg-zinc-100 active:scale-[0.985]"
+          className="group flex w-full items-center justify-center gap-2 rounded-xl bg-gray-300 px-3 py-2.5 text-sm font-semibold text-zinc-900 shadow-[0_4px_20px_-6px_rgba(255,255,255,0.18)] transition-[transform,background-color] hover:scale-[1.015] hover:bg-zinc-100 active:scale-[0.985]"
         >
           <Plus size={16} strokeWidth={2.5} />
           New session
