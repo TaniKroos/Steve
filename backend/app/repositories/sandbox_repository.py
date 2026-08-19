@@ -29,9 +29,8 @@ class SandboxRepository:
         return sandbox
 
     async def list_past_expiry(self, *, now: datetime) -> list[Sandbox]:
-        """Used by the idle-sandbox sweep background task (FR-13 / NFR-12)
-        -- not wired up yet in this scaffolding pass, but the query it'll
-        need already lives here rather than being invented ad hoc later."""
+        """Used by the idle-sandbox sweep background task (FR-13 / NFR-12,
+        wired up in `app/services/sandbox_sweep.py`)."""
         result = await self._db.execute(
             select(Sandbox).where(Sandbox.expires_at < now, Sandbox.terminated_at.is_(None))
         )

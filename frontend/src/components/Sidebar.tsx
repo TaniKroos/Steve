@@ -49,22 +49,28 @@ export function Sidebar({
       </div>
 
       {collapsed ? (
-        <div className="flex flex-col items-center gap-3 px-2">
+        <div className="flex flex-1 flex-col items-center gap-3 px-2 pb-4">
           <button
             onClick={onNewSession}
             title="New session"
             aria-label="New session"
-            className="flex h-9 w-9 items-center justify-center rounded-xl bg-zinc-100 text-zinc-900 transition hover:bg-white active:scale-[0.95]"
+            className="flex h-9 w-9 items-center justify-center rounded-xl bg-zinc-200 text-zinc-900 transition hover:bg-zinc-100 active:scale-[0.95]"
           >
             <Plus size={18} strokeWidth={2.5} />
           </button>
           <button
-            onClick={onToggleCollapse}
-            title="Expand sidebar"
-            aria-label="Expand sidebar"
-            className="flex h-9 w-9 items-center justify-center rounded-lg text-zinc-500 transition hover:bg-white/[0.06] hover:text-zinc-200"
+            onClick={onLogout}
+            title={`Sign out — ${user.github_login}`}
+            aria-label="Sign out"
+            className="mt-auto flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition hover:ring-2 hover:ring-white/20"
           >
-            <ChevronRight size={18} />
+            {user.avatar_url ? (
+              <img src={user.avatar_url} alt="" className="h-9 w-9 rounded-full ring-1 ring-white/10" />
+            ) : (
+              <div className="flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-zinc-700 to-zinc-800 text-[11px] font-semibold text-zinc-200 ring-1 ring-white/10">
+                {initials}
+              </div>
+            )}
           </button>
         </div>
       ) : (
@@ -73,7 +79,7 @@ export function Sidebar({
       <div className="px-3">
         <button
           onClick={onNewSession}
-          className="group flex w-full items-center justify-center gap-2 rounded-xl bg-zinc-100 px-3 py-2.5 text-sm font-semibold text-zinc-900 shadow-[0_4px_20px_-6px_rgba(255,255,255,0.18)] transition-transform hover:scale-[1.015] hover:bg-white active:scale-[0.985]"
+          className="group flex w-full items-center justify-center gap-2 rounded-xl bg-zinc-200 px-3 py-2.5 text-sm font-semibold text-zinc-900 shadow-[0_4px_20px_-6px_rgba(255,255,255,0.18)] transition-[transform,background-color] hover:scale-[1.015] hover:bg-zinc-100 active:scale-[0.985]"
         >
           <Plus size={16} strokeWidth={2.5} />
           New session

@@ -19,12 +19,28 @@ from e2b import AsyncSandbox  # verify this import path against current E2B SDK 
 from app.repositories.sandbox_repository import SandboxRepository
 
 # How long a freshly created sandbox is allowed to live before the sweep
-# job (Requirements/requirements.md FR-13/NFR-12, not wired up in this
-# pass) is allowed to reclaim it. This is a hard ceiling, independent of
-# whether the session is still active -- long-running sessions are
-# expected to be rarer than the failure mode this guards against
-# (something never tearing a sandbox down at all).
+# job (Requirements/requirements.md FR-13/NFR-12, wired up in
+# app/services/sandbox_sweep.py) is allowed to reclaim it. Not actually a
+# fixed hard ceiling in practice once a session starts working --
+# Agent Loop keeps pushing this forward for as long as it's genuinely
+# active, and restores a fresh window on every resume-from-pause
+# (agent_loop/app/loop/session_worker.py's `_maybe_extend_sandbox_timeout`
+# / `_resume_sandbox`) -- so this value is really "how stale can
+# `expires_at` get before the sweep assumes nothing is maintaining this
+# sandbox anymore," not "kill everything after 4 hours no matter what."
 _SANDBOX_MAX_LIFETIME = timedelta(hours=4)
+
+# E2B's own `timeout=` at creation (separate from the app-level ceiling
+# above, and previously never passed at all -- E2B's SDK default is only
+# 300s, `claude/long-running-task-reliability-plan.md` §A). 30 minutes of
+# initial headroom, then Agent Loop keeps this sliding forward via
+# `set_timeout()` while the session is actively working
+# (`SessionWorker._maybe_extend_sandbox_timeout`). `lifecycle`'s
+# `on_timeout: "pause"` is a safety net on top: if that extension ever
+# lags, the sandbox pauses instead of dying -- verified against the
+# installed `e2b` SDK, not assumed from docs.
+_SANDBOX_INITIAL_TIMEOUT_SECONDS = 1800
+_LIFECYCLE_PAUSE_ON_TIMEOUT = {"on_timeout": "pause"}
 
 
 class SandboxOrchestrator:
@@ -41,7 +57,12 @@ class SandboxOrchestrator:
         need the `e2b_sandbox_id` to hand to Agent Loop, not the live SDK
         handle, since backend never executes anything inside it.
         """
-        e2b_sandbox = await AsyncSandbox.create(template=self._template, api_key=self._e2b_api_key)
+        e2b_sandbox = await AsyncSandbox.create(
+            template=self._template,
+            api_key=self._e2b_api_key,
+            timeout=_SANDBOX_INITIAL_TIMEOUT_SECONDS,
+            lifecycle=_LIFECYCLE_PAUSE_ON_TIMEOUT,
+        )
         expires_at = datetime.now(timezone.utc) + _SANDBOX_MAX_LIFETIME
 
         try:
@@ -62,8 +83,8 @@ class SandboxOrchestrator:
             raise
 
     async def terminate(self, sandbox_id: uuid.UUID, e2b_sandbox_id: str) -> None:
-        """Used by the (not-yet-wired-up) idle-sweep background task, and
-        by explicit teardown-on-session-close. Deleting the E2B sandbox
+        """Used by the idle-sweep background task (app/services/sandbox_sweep.py),
+        and by explicit teardown-on-session-close. Deleting the E2B sandbox
         and marking our own row terminated are two separate calls on
         purpose -- if the E2B call fails, we don't want to have already
         told ourselves it's gone.

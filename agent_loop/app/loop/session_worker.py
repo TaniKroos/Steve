@@ -22,7 +22,7 @@ import logging
 import shlex
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from cloudagent_core.db.session import db_session_scope
 from cloudagent_core.github_app import GithubApp
@@ -59,6 +59,31 @@ _FILE_WRITE_TOOLS = frozenset({"str_replace", "create_file", "insert_at_line", "
 # how those changes still reach the browser without a raw filesystem
 # watch.
 _SHELL_SYNC_TOOLS = frozenset({"shell_exec", "shell_view"})
+
+# Idle/blocked pause-resume (claude/long-running-task-reliability-plan.md
+# §A). How long a paused sandbox's snapshot is kept before backend's
+# sweep job (backend/app/services/sandbox_sweep.py) deletes it; E2B does
+# not auto-expire paused sandboxes on its own.
+_PAUSED_SANDBOX_RETENTION = timedelta(days=7)
+# `GithubApp.mint_installation_token`'s own documented TTL -- a token
+# minted on resume is recorded against this so a future check can know
+# without guessing whether a reconnect needs a re-mint.
+_INSTALLATION_TOKEN_TTL = timedelta(hours=1)
+# How often an actively-working session's sandbox timeout gets pushed
+# forward via `set_timeout()` -- throttled well below the timeout itself
+# so this doesn't cost an E2B API round-trip on every single tool call.
+_TIMEOUT_EXTEND_INTERVAL = timedelta(minutes=5)
+_ACTIVE_SANDBOX_TIMEOUT_SECONDS = 1800
+# How far forward `Sandbox.expires_at` gets pushed on resume and on every
+# active-timeout extension -- deliberately the same window as backend's
+# `_SANDBOX_MAX_LIFETIME` (backend/app/services/sandbox_orchestrator.py),
+# kept as a separate constant here rather than a cross-service import
+# since the two services don't share config, but must be changed
+# together if either ever changes. This is the coarse, slow-moving DB
+# safety-net ceiling the sweep job checks -- distinct from
+# `_ACTIVE_SANDBOX_TIMEOUT_SECONDS` above, which is E2B's own much
+# tighter internal liveness timeout.
+_ORPHAN_SAFETY_NET_WINDOW = timedelta(hours=4)
 
 
 @dataclass
@@ -141,6 +166,12 @@ class SessionWorker:
         # dirty, which is harmless (the frontend's file_edit handling is
         # already idempotent).
         self._last_status: dict[str, str] = {}
+        # Throttle state for `_maybe_extend_sandbox_timeout` -- `None`
+        # until the first tool dispatch, same "narrow, in-memory-only"
+        # reasoning as `_last_status` above: losing it on a crash-recovery
+        # rehydrate just means the next dispatch extends immediately
+        # instead of waiting out the rest of the interval, harmless.
+        self._last_timeout_extend: datetime | None = None
 
     async def run(self, initial_message: str | None) -> None:
         """`initial_message=None` means this is a crash-recovery resume
@@ -227,12 +258,7 @@ class SessionWorker:
                     # comply and end the session outright, treat this
                     # exactly like an explicit BLOCK: wait for the user's
                     # next message instead of tearing the session down.
-                    await self._update_status("blocked")
-                    text = await self.incoming.get()
-                    await self._update_status("running")
-                    content = [{"type": "text", "text": text}]
-                    self._history.append({"role": "user", "content": content})
-                    await self._save_message(role="user", content=content)
+                    await self._block_until_reply()
                     continue  # nothing to dispatch on this turn -- already handled above
 
                 session_done = await self._dispatch_all(message.id, turn.tool_uses)
@@ -279,15 +305,16 @@ class SessionWorker:
             if result.done:
                 session_done = True
             if result.blocked:
-                await self._update_status("blocked")
-                text = await self.incoming.get()
-                await self._update_status("running")
-                content = [{"type": "text", "text": text}]
-                self._history.append({"role": "user", "content": content})
-                await self._save_message(role="user", content=content)
+                await self._block_until_reply()
         return session_done
 
     async def _dispatch(self, message_id: uuid.UUID, tool_use: ToolUseBlock) -> ToolResult:
+        # Before the tool_call row exists, so a failure here (sandbox
+        # genuinely gone) is handled by _dispatch_all's existing
+        # SandboxUnreachableError handling exactly like any other failed
+        # sandbox call mid-turn -- no separate error path needed.
+        await self._maybe_extend_sandbox_timeout()
+
         async with db_session_scope(self._session_factory) as db:
             tool_call = await ToolCallRepository(db).create(
                 message_id=message_id, tool_use_id=tool_use.id, tool_name=tool_use.name, input=tool_use.input
@@ -433,12 +460,7 @@ class SessionWorker:
         exact same credential context the clone used (plan §6.4)."""
         await self._events.publish(self.session_id, {"type": "status", "text": "preparing sandbox..."})
         await self._ensure_gh_cli()
-
-        auth = await self._sandbox.run_command(
-            f"echo {shlex.quote(installation_token)} | gh auth login --with-token && gh auth setup-git", timeout=30
-        )
-        if auth.exit_code != 0:
-            raise RuntimeError(f"gh auth failed: {auth.stderr}")
+        await self._authenticate_gh(installation_token)
 
         # Idempotent on purpose: this runs on every call path, including
         # a crash-recovery rehydrate that reconnects to a sandbox that's
@@ -489,6 +511,129 @@ class SessionWorker:
         if result.exit_code != 0:
             raise RuntimeError(f"failed to install gh CLI: {result.stderr}")
 
+    async def _authenticate_gh(self, installation_token: str) -> None:
+        """Extracted out of `_connect_and_clone` so the resume-from-pause
+        path (`_resume_sandbox`) can redo this without duplicating the
+        shell command -- a freshly-minted token is required there too,
+        for the same reason (plan §A: the token embedded at clone time
+        has only a ~1hr TTL and a pause can outlast that easily)."""
+        auth = await self._sandbox.run_command(
+            f"echo {shlex.quote(installation_token)} | gh auth login --with-token && gh auth setup-git", timeout=30
+        )
+        if auth.exit_code != 0:
+            raise RuntimeError(f"gh auth failed: {auth.stderr}")
+
+    # ------------------------------------------------------------------
+    # Idle/blocked pause-resume (claude/long-running-task-reliability-plan.md
+    # §A) -- deliberately separate from sandbox-crash recovery below:
+    # "died" and "idle" aren't the same problem, and this half stays in
+    # scope while checkpoint-based crash recovery stays parked.
+    # ------------------------------------------------------------------
+
+    async def _block_until_reply(self) -> None:
+        """Shared by both places that wait on `self.incoming` -- an
+        explicit `message_user(BLOCK)`, and a turn that ended in plain
+        text with no tool call (treated the same as BLOCK, see
+        `_loop_until_done`). Pauses the sandbox (stops compute billing)
+        for as long as the wait actually takes, instead of today's prior
+        behavior of leaving it running the whole time."""
+        await self._update_status("blocked")
+        await self._pause_sandbox()
+        text = await self.incoming.get()
+        # Appended immediately, before anything sandbox-related that
+        # could raise -- the user's reply must never be lost even if
+        # resume fails and falls through to full crash recovery via
+        # `_run_with_sandbox_recovery` (which restarts `_loop_until_done`
+        # from the top, re-sending whatever `_history` already holds).
+        content = [{"type": "text", "text": text}]
+        self._history.append({"role": "user", "content": content})
+        await self._save_message(role="user", content=content)
+        await self._resume_sandbox()
+        await self._update_status("running")
+
+    async def _pause_sandbox(self) -> None:
+        try:
+            await self._sandbox.pause()
+        except SandboxUnreachableError:
+            # Best-effort: pausing is a cost optimization, not required
+            # for correctness -- if the sandbox is already unreachable,
+            # resume will discover that itself and fall through to full
+            # crash recovery anyway. Don't fail a session just because it
+            # couldn't be paused.
+            logger.warning("session %s: pause failed, continuing unpaused", self.session_id, exc_info=True)
+            return
+        async with db_session_scope(self._session_factory) as db:
+            await SandboxRepository(db).update_status_by_e2b_id(
+                self._sandbox.sandbox_id,
+                status="paused",
+                expires_at=datetime.now(timezone.utc) + _PAUSED_SANDBOX_RETENTION,
+            )
+        await self._events.publish(
+            self.session_id, {"type": "status", "text": "sandbox paused while waiting for your reply"}
+        )
+
+    async def _resume_sandbox(self) -> None:
+        """Reconnecting via the same `sandbox_id` auto-resumes a paused
+        sandbox (verified against the installed SDK: `connect()`'s own
+        docstring -- "If the sandbox is paused, it will be automatically
+        resumed"). Raises `SandboxUnreachableError` on failure, same as
+        any other sandbox call -- deliberately left uncaught here so it
+        propagates out of `_loop_until_done` to `_run_with_sandbox_recovery`,
+        which already knows how to fall back to full crash recovery; no
+        separate error path needed for "resume specifically failed"."""
+        sandbox_id = self._sandbox.sandbox_id
+        self._sandbox = await E2BSandbox.connect(sandbox_id, self._e2b_api_key)
+        self._tool_context = self._build_tool_context()
+
+        fresh_token = await self._github_app.mint_installation_token(
+            self._repo_context.installation_id, repository_ids=[self._repo_context.repo_github_id]
+        )
+        await self._authenticate_gh(fresh_token)
+
+        async with db_session_scope(self._session_factory) as db:
+            await SandboxRepository(db).update_status_by_e2b_id(
+                sandbox_id,
+                status="running",
+                # Not `None` -- a resumed sandbox still needs a real
+                # forward-looking safety-net ceiling for the sweep job to
+                # fall back on if this session later stalls without ever
+                # pausing again (worker crash, stuck loop). Restored here
+                # and then kept sliding forward by
+                # `_maybe_extend_sandbox_timeout` below, same shape as the
+                # ceiling every sandbox gets at creation
+                # (`sandbox_orchestrator.py`'s `_SANDBOX_MAX_LIFETIME`).
+                expires_at=datetime.now(timezone.utc) + _ORPHAN_SAFETY_NET_WINDOW,
+                token_expires_at=datetime.now(timezone.utc) + _INSTALLATION_TOKEN_TTL,
+            )
+        await self._events.publish(self.session_id, {"type": "status", "text": "resuming..."})
+
+    async def _maybe_extend_sandbox_timeout(self) -> None:
+        """Called on every tool dispatch (`_dispatch`) -- throttled so an
+        actively-working session doesn't pay an E2B API round-trip (and a
+        DB write) on every single tool call, only roughly once per
+        `_TIMEOUT_EXTEND_INTERVAL`. Independent of pause/resume above:
+        this is what keeps an *actively working* session's timeout
+        sliding forward, since pausing doesn't help while real work is
+        happening.
+
+        Also pushes `Sandbox.expires_at` forward in the same call --
+        without this, the sweep job's safety-net ceiling would go stale
+        the moment a long session outlives it, since nothing else in an
+        actively-running session ever touches that column. This is what
+        lets the same sweep query safely reap both a genuinely orphaned
+        sandbox (this stops being called at all, so expires_at is never
+        pushed forward again) and a genuinely idle paused one, without
+        ever catching a session that's actually still being worked on."""
+        now = datetime.now(timezone.utc)
+        if self._last_timeout_extend is not None and now - self._last_timeout_extend < _TIMEOUT_EXTEND_INTERVAL:
+            return
+        await self._sandbox.set_timeout(_ACTIVE_SANDBOX_TIMEOUT_SECONDS)
+        async with db_session_scope(self._session_factory) as db:
+            await SandboxRepository(db).update_status_by_e2b_id(
+                self._sandbox.sandbox_id, status="running", expires_at=now + _ORPHAN_SAFETY_NET_WINDOW
+            )
+        self._last_timeout_extend = now
+
     async def _recover_sandbox(self) -> None:
         """Plan §5.5: the sandbox itself (not Agent Loop's process) is
         gone. Provision a fresh one, re-clone, check out the last
@@ -502,8 +647,36 @@ class SessionWorker:
             self.session_id,
             {"type": "status", "text": "sandbox was lost -- provisioning a new one and resuming..."},
         )
+
+        # Best-effort: the sandbox being abandoned here may genuinely be
+        # gone (the real crash case), or -- confirmed happening in
+        # practice, not just theoretical -- it may actually still be
+        # alive and just slow (claude/long-running-task-reliability-plan.md
+        # §B's timeout misclassification). Either way, drop it cleanly
+        # instead of leaking a live, billed sandbox nothing will ever
+        # reference again once `self._sandbox` below is reassigned.
+        # `kill_sandbox()` already swallows failures internally.
+        old_sandbox_id = self._sandbox.sandbox_id
+        await self._sandbox.kill_sandbox()
+
         self._sandbox = await E2BSandbox.create(self._e2b_template, self._e2b_api_key)
         self._tool_context = self._build_tool_context()
+
+        # Persist the replacement -- previously nothing did, meaning the
+        # DB only ever knew about the *original* sandbox from session
+        # start (backend/app/services/sandbox_orchestrator.py), and every
+        # recovery cycle's replacement existed only in this worker's own
+        # memory: untracked by the sweep, and lost entirely (with no
+        # in-DB record to even know it existed) if this session's own
+        # teardown was ever skipped.
+        async with db_session_scope(self._session_factory) as db:
+            repo = SandboxRepository(db)
+            await repo.mark_terminated_by_e2b_id(old_sandbox_id, terminated_at=datetime.now(timezone.utc))
+            await repo.create(
+                session_id=self.session_id,
+                e2b_sandbox_id=self._sandbox.sandbox_id,
+                expires_at=datetime.now(timezone.utc) + _ORPHAN_SAFETY_NET_WINDOW,
+            )
 
         fresh_token = await self._github_app.mint_installation_token(
             self._repo_context.installation_id, repository_ids=[self._repo_context.repo_github_id]
@@ -515,6 +688,13 @@ class SessionWorker:
             await self._sandbox.run_command(
                 f"git -C {shlex.quote(_REPO_DIR)} checkout {shlex.quote(session.branch_name)}", timeout=30
             )
+        # Covers a case new to this recovery path since pause/resume was
+        # added: if `_resume_sandbox()` (called from `_block_until_reply`)
+        # raised and fell through to here, status is still "blocked" in
+        # the DB -- `_block_until_reply`'s own `_update_status("running")`
+        # never ran. Setting it here too means the DB never lags reality
+        # regardless of which path led into this recovery.
+        await self._update_status("running")
         await self._events.publish(self.session_id, {"type": "status", "text": "sandbox restarted, resuming"})
 
     # ------------------------------------------------------------------

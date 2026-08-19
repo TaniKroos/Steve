@@ -49,7 +49,7 @@ export function Composer({
           <button
             onClick={() => void submit()}
             disabled={!value.trim() || disabled || sending}
-            className="mb-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-zinc-100 text-zinc-900 transition disabled:opacity-30 disabled:grayscale enabled:hover:scale-105 enabled:hover:bg-white"
+            className="mb-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-zinc-200 text-zinc-900 transition disabled:opacity-30 disabled:grayscale enabled:hover:scale-105 enabled:hover:bg-zinc-100"
           >
             {sending ? <Loader2 size={16} className="animate-spin" /> : <ArrowUp size={16} strokeWidth={2.5} />}
           </button>

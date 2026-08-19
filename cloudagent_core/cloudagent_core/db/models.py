@@ -167,7 +167,7 @@ class Sandbox(Base):
     id: Mapped[uuid.UUID] = _uuid_pk()
     session_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("sessions.id"), index=True)
     e2b_sandbox_id: Mapped[str]
-    status: Mapped[str] = mapped_column(default="creating")  # creating | running | idle | terminated
+    status: Mapped[str] = mapped_column(default="creating")  # creating | running | paused | terminated
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     expires_at: Mapped[datetime | None]
     token_expires_at: Mapped[datetime | None]

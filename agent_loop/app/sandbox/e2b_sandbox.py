@@ -19,13 +19,26 @@ guessed from docs -- see the plan's build notes):
      EditorTool can turn it into a normal `is_error` tool_result the
      model can act on (e.g. "try a different path"), never conflated
      with case 3 below.
-  3. The sandbox itself being unreachable (connection dropped, timed
-     out, or gone -- `SandboxException`/`SandboxNotFoundException`/
-     `TimeoutException`, all the same base class E2B doesn't otherwise
-     distinguish). Wrapped as `SandboxUnreachableError`, which
-     SessionWorker handles completely differently from a failed command
-     (plan §5.5): the model can't "fix" this by trying again, it needs a
-     whole new sandbox.
+  3. The sandbox itself being unreachable (connection dropped, or gone
+     -- `SandboxException`/`SandboxNotFoundException`, or `TimeoutException`
+     when a health probe confirms the sandbox is actually down). Wrapped
+     as `SandboxUnreachableError`, which SessionWorker handles completely
+     differently from a failed command (plan §5.5): the model can't "fix"
+     this by trying again, it needs a whole new sandbox.
+  4. A command that simply outran its own `timeout=` budget. This *also*
+     raises `TimeoutException` -- verified against the installed SDK
+     source (`e2b/envd/rpc.py`'s `_DEFAULT_RPC_ERROR_MAP`): a client-side
+     deadline (`DEADLINE_EXCEEDED`) and the sandbox genuinely being gone
+     (`UNAVAILABLE`)/the connection dropping (`CANCELED`) all funnel into
+     the exact same exception class, with no distinguishable type. This
+     used to mean a slow command (a cold `npm install`, a real build) got
+     misreported as case 3 above and burned a full sandbox-recovery cycle
+     for nothing -- confirmed happening in practice, not just theoretical
+     (`claude/long-running-task-reliability-plan.md` §B). Told apart from
+     case 3 here via the SDK's own real, public `is_running()` health
+     check, deliberately not by inspecting the exception's internal cause
+     chain (the underlying gRPC status code exists but isn't part of the
+     SDK's advertised public contract, so it's not something to build on).
 
 `CommandExitException` and `FileNotFoundException` both happen to be
 `SandboxException` subclasses, so they're always caught *before* the
@@ -39,6 +52,25 @@ from e2b.sandbox_async.commands.command_handle import AsyncCommandHandle
 from e2b.sandbox_async.utils import OutputHandler
 
 from app.exceptions import SandboxUnreachableError
+
+# Default `timeout=` at creation, and the `lifecycle` safety net: if this
+# sandbox ever hits its own timeout -- including by our own mistake, e.g.
+# an active-timeout-extension call lagging -- it pauses instead of dying
+# (verified against the installed SDK: `create()`'s `lifecycle` param
+# accepts `{"on_timeout": "pause"|"kill", ...}`, default `"kill"`).
+# `connect()` auto-resumes a paused sandbox transparently either way, so
+# this makes a self-inflicted timeout non-destructive at zero extra cost.
+# See claude/long-running-task-reliability-plan.md §A.
+_DEFAULT_SANDBOX_TIMEOUT_SECONDS = 1800
+_LIFECYCLE_PAUSE_ON_TIMEOUT = {"on_timeout": "pause"}
+
+# Default per-command timeout when the model doesn't specify one (was 60s
+# -- confirmed too short in practice: a real session's `npm run build`
+# tripped this three times in one run, each misreported as the sandbox
+# dying, claude/long-running-task-reliability-plan.md §B). Model-settable
+# per call above this via `shell_exec`'s own `timeout` parameter for
+# anything expected to run longer still.
+_DEFAULT_COMMAND_TIMEOUT_SECONDS = 120
 
 
 @dataclass
@@ -60,7 +92,7 @@ class SandboxPort:
         cmd: str,
         *,
         cwd: str | None = None,
-        timeout: float = 60,
+        timeout: float = _DEFAULT_COMMAND_TIMEOUT_SECONDS,
         on_stdout: OutputHandler | None = None,
         on_stderr: OutputHandler | None = None,
     ) -> CommandOutcome: ...
@@ -85,6 +117,8 @@ class SandboxPort:
     @property
     def sandbox_id(self) -> str: ...
     async def kill_sandbox(self) -> None: ...
+    async def pause(self) -> None: ...
+    async def set_timeout(self, timeout: int) -> None: ...
 
 
 class E2BSandbox(SandboxPort):
@@ -114,8 +148,12 @@ class E2BSandbox(SandboxPort):
         return cls(sandbox, api_key)
 
     @classmethod
-    async def create(cls, template: str, api_key: str) -> "E2BSandbox":
-        sandbox = await AsyncSandbox.create(template=template, api_key=api_key)
+    async def create(
+        cls, template: str, api_key: str, timeout: int = _DEFAULT_SANDBOX_TIMEOUT_SECONDS
+    ) -> "E2BSandbox":
+        sandbox = await AsyncSandbox.create(
+            template=template, api_key=api_key, timeout=timeout, lifecycle=_LIFECYCLE_PAUSE_ON_TIMEOUT
+        )
         return cls(sandbox, api_key)
 
     @property
@@ -127,7 +165,7 @@ class E2BSandbox(SandboxPort):
         cmd: str,
         *,
         cwd: str | None = None,
-        timeout: float = 60,
+        timeout: float = _DEFAULT_COMMAND_TIMEOUT_SECONDS,
         on_stdout: OutputHandler | None = None,
         on_stderr: OutputHandler | None = None,
     ) -> CommandOutcome:
@@ -139,7 +177,35 @@ class E2BSandbox(SandboxPort):
         except CommandExitException as exc:
             return CommandOutcome(stdout=exc.stdout, stderr=exc.stderr, exit_code=exc.exit_code)
         except SandboxException as exc:
+            # Could be a command that simply outran `timeout`, or the
+            # sandbox genuinely being gone -- the SDK raises the same
+            # exception class for both (module docstring, case 3 vs 4).
+            # Ask the sandbox directly rather than guess.
+            if await self._is_alive():
+                return CommandOutcome(
+                    stdout="",
+                    stderr=(
+                        f"command exceeded its {timeout}s timeout; the sandbox is still reachable, but this "
+                        "blocking call has no way to keep waiting or recover the command's eventual output. "
+                        "Retry with a longer `timeout`, or rerun with blocking=false to run it in the "
+                        "background and poll its progress via shell_view."
+                    ),
+                    exit_code=None,
+                )
             raise SandboxUnreachableError(f"sandbox unreachable while running command: {exc}") from exc
+
+    async def _is_alive(self) -> bool:
+        """Real, public health check (`AsyncSandbox.is_running()`) -- the
+        one way to tell a merely-slow command apart from a genuinely dead
+        sandbox without relying on the exception's internal cause chain
+        (see the module docstring). Any failure of the probe itself is
+        treated as "can't confirm alive," matching this method's prior,
+        more conservative default of always assuming the sandbox was
+        gone."""
+        try:
+            return await self._sandbox.is_running()
+        except Exception:  # noqa: BLE001 -- deliberately broad: any probe failure means "can't confirm," not "confirmed dead"
+            return False
 
     async def start_background_command(
         self,
@@ -223,3 +289,27 @@ class E2BSandbox(SandboxPort):
             await AsyncSandbox.kill(self._sandbox.sandbox_id, api_key=self._api_key)
         except SandboxException:
             pass
+
+    async def pause(self) -> None:
+        """`claude/long-running-task-reliability-plan.md` §A: called when
+        a session goes `blocked` waiting on the user, to stop compute
+        billing instead of leaving the sandbox running for however long
+        the reply takes. `keep_memory` defaults to `True` on the SDK side
+        (not passed explicitly here) -- preserves running processes/open
+        connections across the pause, so a backgrounded `shell_exec`
+        survives a pause/resume cycle, not just committed files."""
+        try:
+            await self._sandbox.pause()
+        except SandboxException as exc:
+            raise SandboxUnreachableError(f"sandbox unreachable while pausing: {exc}") from exc
+
+    async def set_timeout(self, timeout: int) -> None:
+        """Extends (or reduces) this sandbox's timeout from wherever it
+        currently stands -- called periodically while a session is
+        actively working (`SessionWorker._maybe_extend_sandbox_timeout`)
+        so an active task's timeout keeps sliding forward independently
+        of pause/resume."""
+        try:
+            await self._sandbox.set_timeout(timeout)
+        except SandboxException as exc:
+            raise SandboxUnreachableError(f"sandbox unreachable while extending timeout: {exc}") from exc

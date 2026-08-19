@@ -12,6 +12,7 @@ What lives here and nowhere else in this service:
     their own try/except for business errors -- see app/exceptions.py)
 """
 
+import asyncio
 from contextlib import asynccontextmanager
 
 import httpx
@@ -33,6 +34,7 @@ from app.exceptions import (
     SessionNotActive,
 )
 from app.routers import auth, events, github, sessions
+from app.services.sandbox_sweep import SandboxSweep
 
 
 @asynccontextmanager
@@ -57,9 +59,17 @@ async def lifespan(app: FastAPI):
     app.state.http_client = http_client
     app.state.github_app = github_app
 
+    # NFR-12's idle-sweep -- reaps sandboxes nothing is maintaining
+    # anymore (a crashed Agent Loop instance, or a paused sandbox past
+    # its 7-day retention). Same pattern as Agent Loop's own
+    # CrashRecoverySweep: a plain background task, no new infra.
+    sweep = SandboxSweep(session_factory, settings.e2b_api_key, settings.e2b_sandbox_template)
+    sweep_task = asyncio.create_task(sweep.run_forever())
+
     yield  # the application serves requests while suspended here
 
     # Shutdown: release everything opened above, in reverse-ish order.
+    sweep_task.cancel()
     await http_client.aclose()
     await redis.aclose()
     await engine.dispose()

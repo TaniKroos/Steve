@@ -88,7 +88,7 @@ export function LoginScreen() {
             v1 · shell · editor · git
           </div>
 
-          <h1 className="animate-fade-up [animation-delay:60ms] text-4xl font-bold tracking-tight text-zinc-50 sm:text-6xl">
+          <h1 className="animate-fade-up [animation-delay:60ms] text-4xl font-bold tracking-tight text-zinc-400 sm:text-6xl">
             Your codebase,
             <br />
             <span className="text-gradient">worked on while you sleep.</span>
@@ -116,7 +116,7 @@ export function LoginScreen() {
           */}
           <a
             href={api.loginUrl}
-            className="animate-fade-up group relative mt-10 inline-flex items-center gap-2.5 overflow-hidden rounded-xl bg-zinc-50 px-6 py-3.5 text-sm font-semibold text-zinc-900 shadow-[0_0_0_1px_rgba(255,255,255,0.08)] transition-transform duration-200 hover:scale-[1.02] active:scale-[0.98] [animation-delay:180ms]"
+            className="animate-fade-up group relative mt-10 inline-flex items-center gap-2.5 overflow-hidden rounded-xl bg-zinc-200 px-6 py-3.5 text-sm font-semibold text-zinc-900 shadow-[0_0_0_1px_rgba(255,255,255,0.08)] transition-[transform,background-color] duration-200 hover:scale-[1.02] hover:bg-zinc-100 active:scale-[0.98] [animation-delay:180ms]"
           >
             <GithubMark size={18} />
             Continue with GitHub

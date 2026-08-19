@@ -107,7 +107,7 @@ export function NewSessionModal({
             <button
               onClick={handleSubmit}
               disabled={submitting || !repoId || !message.trim()}
-              className="flex w-full items-center justify-center gap-2 rounded-xl bg-zinc-100 py-2.5 text-sm font-semibold text-zinc-900 transition disabled:opacity-40 enabled:hover:scale-[1.01] enabled:hover:bg-white"
+              className="flex w-full items-center justify-center gap-2 rounded-xl bg-zinc-200 py-2.5 text-sm font-semibold text-zinc-900 transition disabled:opacity-40 enabled:hover:scale-[1.01] enabled:hover:bg-zinc-100"
             >
               {submitting ? (
                 <Loader2 size={16} className="animate-spin" />

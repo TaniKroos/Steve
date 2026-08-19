@@ -39,7 +39,9 @@ class ShellExecTool(Tool):
     description = (
         "Run a shell command in the sandbox. blocking=true waits for it to finish and returns "
         "stdout/stderr/exit_code directly. blocking=false starts it in the background and returns "
-        "immediately with a shell_id you can poll via shell_view."
+        "immediately with a shell_id you can poll via shell_view. For blocking=true, raise timeout "
+        "for anything that might run long (installs, builds, test suites) -- if you genuinely don't "
+        "know how long something will take, prefer blocking=false instead of guessing a timeout."
     )
     parameters = {
         "type": "object",
@@ -47,6 +49,13 @@ class ShellExecTool(Tool):
             "command": {"type": "string", "description": "The shell command to run"},
             "cwd": {"type": "string", "description": "Working directory, defaults to the repo root"},
             "blocking": {"type": "boolean", "description": "Wait for completion (true) or run in background (false)"},
+            "timeout": {
+                "type": "integer",
+                "description": (
+                    "Max seconds to wait for completion (blocking=true only). Defaults to 120. "
+                    "Raise this for slow commands rather than letting it time out."
+                ),
+            },
         },
         "required": ["command", "blocking"],
     }
@@ -65,11 +74,17 @@ class ShellExecTool(Tool):
         blocking = input["blocking"]
 
         if blocking:
+            # Only forwarded when the model actually specifies one, so
+            # the real default lives in exactly one place
+            # (e2b_sandbox.py's `_DEFAULT_COMMAND_TIMEOUT_SECONDS`)
+            # instead of being duplicated here.
+            timeout_kwargs = {"timeout": input["timeout"]} if input.get("timeout") is not None else {}
             outcome = await context.sandbox.run_command(
                 command,
                 cwd=cwd,
                 on_stdout=self._make_streamer(context, "stdout", shell_id=None),
                 on_stderr=self._make_streamer(context, "stderr", shell_id=None),
+                **timeout_kwargs,
             )
             content = f"exit_code: {outcome.exit_code}\nstdout:\n{outcome.stdout}\nstderr:\n{outcome.stderr}"
             return ToolResult(
