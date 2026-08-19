@@ -352,7 +352,7 @@ function fileIconFor(name: string): { Icon: typeof File; className: string } {
     case "cjs":
       return { Icon: FileCode2, className: "text-sky-400/90" };
     case "json":
-      return { Icon: FileJson, className: "text-amber-400/80" };
+      return { Icon: FileJson, className: "text-zinc-300/80" };
     case "py":
     case "go":
     case "rs":
@@ -360,7 +360,7 @@ function fileIconFor(name: string): { Icon: typeof File; className: string } {
     case "java":
     case "c":
     case "cpp":
-      return { Icon: FileCode2, className: "text-emerald-400/80" };
+      return { Icon: FileCode2, className: "text-zinc-200/80" };
     case "css":
     case "scss":
     case "less":
@@ -459,8 +459,8 @@ function FilesTab({
   return (
     <div className="flex h-full flex-col text-[12px]">
       {reviewDiff && (
-        <div className="shrink-0 border-b border-amber-500/20 bg-amber-500/[0.06]">
-          <div className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-amber-300/90">
+        <div className="shrink-0 border-b border-white/15 bg-white/[0.06]">
+          <div className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-zinc-300">
             Ready for your review -- full diff vs {session.branchName}
           </div>
           <pre className="max-h-40 overflow-auto pb-2 font-mono text-[11.5px] leading-relaxed">
@@ -713,7 +713,7 @@ function TerminalTab({ lines }: { lines: TerminalLine[] }) {
         <p className="text-zinc-600">No shell output yet.</p>
       ) : (
         lines.map((line, i) => (
-          <span key={i} className={line.stream === "stderr" ? "text-rose-300/90" : "text-zinc-300"}>
+          <span key={i} className={line.stream === "stderr" ? "text-zinc-400" : "text-zinc-300"}>
             {line.chunk}
           </span>
         ))

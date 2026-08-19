@@ -9,9 +9,9 @@
   --color-surface-2: #121219;
   --color-edge: #1c1c26;
 
-  --color-accent-from: #0a1b33;
-  --color-accent-via: #123a66;
-  --color-accent-to: #2f6fed;
+  --color-accent-from: #3f3f46;
+  --color-accent-via: #71717a;
+  --color-accent-to: #f4f4f5;
 
   --animate-pulse-slow: pulse-slow 3s ease-in-out infinite;
   --animate-fade-up: fade-up 0.5s ease both;

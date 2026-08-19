@@ -67,8 +67,8 @@ export function LoginScreen() {
     <div className="relative min-h-screen overflow-hidden bg-canvas">
       {/* ambient background */}
       <div className="pointer-events-none absolute inset-0 bg-grid [mask-image:radial-gradient(ellipse_70%_60%_at_50%_0%,black_10%,transparent_75%)]" />
-      <div className="pointer-events-none absolute -top-40 left-1/2 h-[560px] w-[860px] -translate-x-1/2 rounded-full bg-gradient-to-br from-blue-700/25 via-blue-900/20 to-transparent blur-3xl animate-pulse-slow" />
-      <div className="pointer-events-none absolute bottom-[-12rem] right-[-8rem] h-[420px] w-[420px] rounded-full bg-blue-900/20 blur-3xl" />
+      <div className="pointer-events-none absolute -top-40 left-1/2 h-[560px] w-[860px] -translate-x-1/2 rounded-full bg-gradient-to-br from-white/15 via-zinc-700/10 to-transparent blur-3xl animate-pulse-slow" />
+      <div className="pointer-events-none absolute bottom-[-12rem] right-[-8rem] h-[420px] w-[420px] rounded-full bg-zinc-700/15 blur-3xl" />
 
       <div className="relative z-10 flex min-h-screen flex-col">
         <header className="flex items-center justify-between px-6 py-6 sm:px-10">
@@ -84,7 +84,7 @@ export function LoginScreen() {
 
         <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col items-center justify-center px-6 pb-24 text-center">
           <div className="animate-fade-up mb-5 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.03] px-3 py-1 text-xs font-medium text-zinc-400">
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+            <span className="h-1.5 w-1.5 rounded-full bg-zinc-200" />
             v1 · shell · editor · git
           </div>
 
@@ -100,8 +100,8 @@ export function LoginScreen() {
           </p>
 
           {errorMessage && (
-            <div className="animate-fade-up mt-6 flex max-w-md items-start gap-2.5 rounded-xl border border-rose-500/20 bg-rose-500/[0.08] px-4 py-3 text-left text-[13px] text-rose-200">
-              <AlertTriangle size={15} className="mt-0.5 shrink-0 text-rose-400" />
+            <div className="animate-fade-up mt-6 flex max-w-md items-start gap-2.5 rounded-xl border border-white/15 bg-white/[0.06] px-4 py-3 text-left text-[13px] text-zinc-200">
+              <AlertTriangle size={15} className="mt-0.5 shrink-0 text-zinc-300" />
               <span>{errorMessage}</span>
             </div>
           )}

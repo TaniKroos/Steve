@@ -6,7 +6,7 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
   if (message.role === "user") {
     return (
       <div className="flex justify-end">
-        <div className="max-w-[75%] rounded-2xl rounded-tr-sm bg-gradient-to-br from-accent-via to-accent-to px-4 py-2.5 text-[13.5px] leading-relaxed text-white shadow-[0_4px_20px_-8px_rgba(47,111,237,0.4)]">
+        <div className="max-w-[75%] rounded-2xl rounded-tr-sm bg-zinc-100 px-4 py-2.5 text-[13.5px] leading-relaxed text-zinc-900 shadow-[0_4px_20px_-8px_rgba(255,255,255,0.22)]">
           {message.text}
         </div>
       </div>
