@@ -19,7 +19,8 @@ from cloudagent_core.github_app import GithubApp
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.clients.agent_loop_client import AgentLoopClient
-from app.exceptions import AgentLoopUnavailable, PermissionDenied, RepoNotAccessible
+from app.clients.github_client import GithubClient
+from app.exceptions import AgentLoopUnavailable, PermissionDenied, RepoNotAccessible, SessionNotActive, SessionPrAlreadyMerged
 from app.repositories.message_repository import MessageRepository
 from app.repositories.repo_repository import RepoRepository
 from app.repositories.session_repository import SessionRepository
@@ -36,6 +37,7 @@ class SessionService:
         sandbox_orchestrator: SandboxOrchestrator,
         agent_loop_client: AgentLoopClient,
         github_app: GithubApp,
+        github_client: GithubClient,
     ) -> None:
         # Held directly (not just via the repositories) for one reason:
         # `create_session` needs to commit mid-request, not just at the
@@ -47,8 +49,11 @@ class SessionService:
         self._sandboxes = sandbox_orchestrator
         self._agent_loop = agent_loop_client
         self._github_app = github_app
+        self._github = github_client
 
-    async def create_session(self, user: User, repo_id: uuid.UUID, initial_message: str) -> Session:
+    async def create_session(
+        self, user: User, repo_id: uuid.UUID, initial_message: str, base_branch: str, branch_name: str
+    ) -> Session:
         repo = await self._repos.get(repo_id)
         # Same exception, same eventual HTTP response, whether `repo_id`
         # doesn't exist at all or belongs to someone else's installation
@@ -81,7 +86,13 @@ class SessionService:
                 "it may have been removed or access revoked. Reconnect the repo and try again."
             ) from exc
 
-        session = await self._sessions.create(user_id=user.id, repo_id=repo_id, initial_message=initial_message)
+        session = await self._sessions.create(
+            user_id=user.id,
+            repo_id=repo_id,
+            initial_message=initial_message,
+            base_branch=base_branch,
+            branch_name=branch_name,
+        )
         sandbox = await self._sandboxes.provision(session.id)
 
         # Commit here, before calling out to Agent Loop -- not just at
@@ -131,7 +142,38 @@ class SessionService:
         # Backend persists nothing here beyond what Agent Loop itself
         # writes once it processes this -- this method is a thin relay,
         # not a second source of truth for message history.
-        await self._agent_loop.send_message(session_id, text)
+        try:
+            await self._agent_loop.send_message(session_id, text)
+        except SessionNotActive:
+            # No live worker to deliver to -- either genuinely ended
+            # (idle/failed) or orphaned pending the crash-recovery sweep.
+            # Either way, `resume_session` handles it the same way: wake
+            # it back up with this message as what it comes back to.
+            # `claude/session-resume-plan.md`. Refuse first if that would
+            # mean resuming a session whose PR is already merged -- there's
+            # nothing meaningful left to continue.
+            await self._refuse_if_pr_merged(session)
+            await self._agent_loop.resume_session(session_id, text)
+
+    async def _refuse_if_pr_merged(self, session: Session) -> None:
+        """A merged PR is a dead end for resume: GitHub has no "reopen and
+        add commits" for a PR that's already merged (unlike one that's
+        simply closed) -- see the GithubClient.get_pull_request docstring.
+        Only relevant once a PR actually exists; a session that never got
+        that far has nothing to check."""
+        if session.pr_number is None:
+            return
+        repo = await self._repos.get(session.repo_id)
+        if repo is None:
+            return  # repo itself is gone -- resume_session's own handling surfaces a clearer error than this check could
+        installation_token = await self._github_app.mint_installation_token(
+            repo.installation.installation_id, repository_ids=[repo.github_repo_id]
+        )
+        pr = await self._github.get_pull_request(installation_token, repo.owner, repo.name, session.pr_number)
+        if pr.get("merged"):
+            raise SessionPrAlreadyMerged(
+                f"session {session.id}'s PR (#{session.pr_number}) was already merged -- start a new session instead"
+            )
 
     async def list_sessions(self, user: User) -> list[Session]:
         return await self._sessions.list_for_user(user.id)

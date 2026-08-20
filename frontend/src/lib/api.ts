@@ -66,14 +66,27 @@ export const api = {
   // is entirely the backend's concern.
   repos: () => apiFetch<GithubRepo[]>("/api/github/repos"),
 
+  // Always a live GitHub call server-side, never cached like the repo
+  // list -- see GithubService.list_branches_for_repo's docstring for why.
+  // Only meaningful for the base-branch picker at session creation.
+  branches: (repoId: string) => apiFetch<string[]>(`/api/github/repos/${repoId}/branches`),
+
   // A 503 here means Agent Loop rejected/couldn't be reached for the
   // hand-off (SessionService.create_session tears the sandbox back down
   // in that case) -- `ApiError.status` is how the caller tells that
-  // apart from a genuine failure -- see NewSessionModal.tsx.
-  createSession: (repoId: string, initialMessage: string) =>
+  // apart from a genuine failure -- see NewSessionModal.tsx. Every
+  // session always gets its own dedicated branch, created from
+  // `baseBranch` and named `branchName` -- never commits land directly
+  // on an existing branch, base included (claude/session-resume-plan.md).
+  createSession: (repoId: string, initialMessage: string, baseBranch: string, branchName: string) =>
     apiFetch<RemoteSession>("/api/sessions", {
       method: "POST",
-      body: JSON.stringify({ repo_id: repoId, initial_message: initialMessage }),
+      body: JSON.stringify({
+        repo_id: repoId,
+        initial_message: initialMessage,
+        base_branch: baseBranch,
+        branch_name: branchName,
+      }),
     }),
 
   sessions: () => apiFetch<RemoteSession[]>("/api/sessions"),
@@ -83,9 +96,11 @@ export const api = {
   messages: (id: string) => apiFetch<RemoteMessage[]>(`/api/sessions/${id}/messages`),
 
   // 202 Accepted, no body -- see routers/sessions.py's send_message.
-  // Only meaningful while the session is actually `blocked` on a
-  // message_user(BLOCK) tool call (FR-9); Agent Loop has no running
-  // worker to deliver this to otherwise.
+  // Works for a `blocked` session (delivered to the live worker) *and*
+  // an `idle`/`failed` one (wakes a fresh worker with full history
+  // reloaded -- claude/session-resume-plan.md) transparently, same call
+  // either way. Can 409 with a specific "PR already merged" detail if
+  // resuming turned out to be a dead end -- see ChatView.tsx's handling.
   sendMessage: (id: string, text: string) =>
     apiFetch<void>(`/api/sessions/${id}/messages`, { method: "POST", body: JSON.stringify({ text }) }),
 

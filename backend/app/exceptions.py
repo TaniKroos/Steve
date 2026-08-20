@@ -48,6 +48,15 @@ class SessionNotActive(Exception):
     this specific session just isn't running anywhere right now."""
 
 
+class SessionPrAlreadyMerged(Exception):
+    """Raised by SessionService._refuse_if_pr_merged when a resume is
+    attempted on a session whose PR already merged -- GitHub has no
+    "reopen and add commits" for a merged PR (unlike one that's simply
+    closed), so this refuses outright rather than silently continuing on
+    a branch whose work is already fully upstream. See
+    claude/session-resume-plan.md."""
+
+
 class FileNotFoundOnSandbox(Exception):
     """Raised by AgentLoopClient.read_file when the requested path
     doesn't exist in the sandbox's current working tree -- surfaced as a

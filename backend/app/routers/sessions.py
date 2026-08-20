@@ -20,7 +20,9 @@ async def create_session(
     user: User = Depends(get_current_user),
     service: SessionService = Depends(get_session_service),
 ) -> SessionResponse:
-    session = await service.create_session(user, body.repo_id, body.initial_message)
+    session = await service.create_session(
+        user, body.repo_id, body.initial_message, body.base_branch, body.branch_name
+    )
     return SessionResponse.model_validate(session)
 
 

@@ -158,9 +158,10 @@ def get_session_service(
     sandbox_orchestrator: SandboxOrchestrator = Depends(get_sandbox_orchestrator),
     agent_loop_client: AgentLoopClient = Depends(get_agent_loop_client),
     github_app: GithubApp = Depends(get_github_app),
+    github_client: GithubClient = Depends(get_github_client),
 ) -> SessionService:
     return SessionService(
-        db, session_repo, repo_repo, message_repo, sandbox_orchestrator, agent_loop_client, github_app
+        db, session_repo, repo_repo, message_repo, sandbox_orchestrator, agent_loop_client, github_app, github_client
     )
 
 

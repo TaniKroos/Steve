@@ -86,6 +86,15 @@ export function AppShell() {
     (prUrl, prNumber) => {
       if (selectedId) patchSession(selectedId, { pr_url: prUrl, pr_number: prNumber });
     },
+    (status) => {
+      // Previously the sidebar's status dot only ever updated via the
+      // list poll below, which is gated on *already knowing* a session
+      // is live -- a session that was idle and just got resumed never
+      // tripped that gate, so it could stay stuck showing "Idle"
+      // indefinitely. This is the real-time fix (session_status SSE
+      // event, agent_loop's SessionWorker._update_status).
+      if (selectedId) patchSession(selectedId, { status });
+    },
   );
 
   const [sandboxOpen, setSandboxOpen] = useState(true);

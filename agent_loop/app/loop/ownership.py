@@ -116,29 +116,36 @@ async def run_owned_session(
     session_id: uuid.UUID,
     worker: SessionWorker,
     initial_message: str | None,
+    *,
+    resume_message: str | None = None,
 ) -> None:
     """The full lifecycle around one worker's `run()` call -- registers
     it locally, keeps its Redis ownership alive for as long as it's
     running, and unwinds all of that (including the load counter
     claimed by whichever caller claimed this session) once it finishes,
-    however it finishes. Shared by both the normal `/start` path and the
-    crash-recovery sweep's rehydrate path (routers/internal.py and the
-    sweep below) so neither duplicates this bookkeeping."""
+    however it finishes. Shared by the normal `/start` path, the
+    crash-recovery sweep's rehydrate path, and the `/resume` path for a
+    genuinely ended session (routers/internal.py, the sweep below, and
+    `claude/session-resume-plan.md`) so none of them duplicate this
+    bookkeeping."""
     worker_registry.register(session_id, worker)
     renewal_task = asyncio.create_task(_renew_loop(ownership, session_id))
     try:
-        await worker.run(initial_message)
+        await worker.run(initial_message, resume_message=resume_message)
     finally:
         renewal_task.cancel()
         worker_registry.unregister(session_id)
         await ownership.release_session(session_id)
         await ownership.decrement_load()
-        # `worker.run()` returning at all -- success, RecoveryExhausted,
-        # or any other terminal exception -- means this session has no
-        # live path back to being resumed (no idle-session-resume today,
-        # see claude/live-workspace-view-plan.md §5), so its sandbox is
-        # genuinely done. Closes a real, previously-unwired gap: nothing
-        # else in this codebase ever called kill_sandbox().
+        # `worker.run()` returning at all means this particular run has
+        # ended -- successfully, via `RecoveryExhausted`, or any other
+        # terminal exception -- so its sandbox is done *for now*. Not
+        # permanent: a session that ends up `idle`/`failed` can still be
+        # resumed later via `/resume` (`claude/session-resume-plan.md`),
+        # which provisions a fresh sandbox rather than reusing this one.
+        # Tearing this one down regardless is still correct -- closes a
+        # real, previously-unwired gap where nothing ever called
+        # `kill_sandbox()` at all.
         await worker.teardown_sandbox()
 
 

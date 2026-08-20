@@ -12,12 +12,25 @@ class SessionRepository:
     def __init__(self, db: AsyncSession) -> None:
         self._db = db
 
-    async def create(self, *, user_id: uuid.UUID, repo_id: uuid.UUID, initial_message: str) -> Session:
+    async def create(
+        self, *, user_id: uuid.UUID, repo_id: uuid.UUID, initial_message: str, base_branch: str, branch_name: str
+    ) -> Session:
         # `initial_message` isn't a column on Session -- it becomes the
         # first row in `messages` instead (role="user"), which
         # SessionService is responsible for writing once this row exists
         # and has an id. This repository only owns the `sessions` table.
-        session = Session(user_id=user_id, repo_id=repo_id, status="starting")
+        #
+        # `branch_name`/`base_branch` set here now, not later when a PR
+        # opens (claude/session-resume-plan.md) -- the user names the
+        # working branch and picks its base up front, at session
+        # creation, so both are already known before the agent even
+        # starts. Every session always gets a dedicated branch (never
+        # commits straight to an existing one, base included) -- the
+        # user's own call on this, made explicitly to avoid a session
+        # ever landing commits directly on a real branch like main.
+        session = Session(
+            user_id=user_id, repo_id=repo_id, status="starting", base_branch=base_branch, branch_name=branch_name
+        )
         self._db.add(session)
         await self._db.flush()  # assigns session.id without committing the whole request yet
         return session

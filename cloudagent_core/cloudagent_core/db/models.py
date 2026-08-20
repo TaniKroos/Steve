@@ -144,6 +144,12 @@ class Session(Base):
     status: Mapped[str] = mapped_column(default="starting")
     title: Mapped[str | None]
     branch_name: Mapped[str | None]
+    # The branch `branch_name` was created from -- set at session creation
+    # alongside `branch_name` now (claude/session-resume-plan.md), not
+    # just derivable from the repo's overall default: a session can be
+    # based on any existing branch, not only the default one. Needed by
+    # git_create_pr to open the PR against the right base.
+    base_branch: Mapped[str | None]
     pr_number: Mapped[int | None]
     pr_url: Mapped[str | None]
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())

@@ -64,6 +64,19 @@ class GithubService:
         await self._sync_installation_repos(installation)
         return installation
 
+    async def list_branches_for_repo(self, repo: Repo) -> list[str]:
+        """Powers the base-branch picker at session creation
+        (claude/session-resume-plan.md) -- always a live call, never
+        synced/cached the way the repo list is (see `list_branches`'s own
+        docstring in GithubClient for why: branches turn over far faster,
+        and this is only ever consulted at the one moment a session is
+        being created, not displayed across a long-lived UI session)."""
+        installation_token = await self._github_app.mint_installation_token(
+            repo.installation.installation_id, repository_ids=[repo.github_repo_id]
+        )
+        branches = await self._github.list_branches(installation_token, repo.owner, repo.name)
+        return [b["name"] for b in branches]
+
     async def list_repos_for_user(self, user: User) -> list[Repo]:
         """Serves the repo-picker. Walks this user's installations and
         resyncs any whose `last_synced_at` is missing or older than

@@ -6,6 +6,7 @@ same wiring either way, so those two callers never duplicate it.
 """
 
 import uuid
+from datetime import datetime, timezone
 
 from cloudagent_core.db.session import db_session_scope
 from cloudagent_core.github_app import GithubApp
@@ -14,6 +15,7 @@ from app.events.publisher import EventPublisher
 from app.exceptions import SandboxUnreachableError
 from app.llm.port import LLMPort
 from app.loop.session_worker import RepoContext, SessionWorker
+from app.repositories.sandbox_repository import SandboxRepository
 from app.repositories.session_repository import SessionRepository
 from app.sandbox.e2b_sandbox import E2BSandbox
 from app.tools.registry import build_tool_registry
@@ -42,12 +44,20 @@ class SessionWorkerFactory:
             if session is None:
                 raise ValueError(f"no session {session_id}")
             repo, installation = session.repo, session.repo.installation
+            # Both set by backend at session creation, before `/start` is
+            # ever called (SessionService.create_session) -- committed to
+            # Postgres ahead of that call for the same read-committed
+            # isolation reason documented at that call site, so they're
+            # always real by the time this query runs, on both the
+            # `/start` and `/resume` paths alike.
             return RepoContext(
                 repo_id=repo.id,
                 repo_full_name=f"{repo.owner}/{repo.name}",
                 default_branch=repo.default_branch,
                 installation_id=installation.installation_id,
                 repo_github_id=repo.github_repo_id,
+                base_branch=session.base_branch or repo.default_branch,
+                branch_name=session.branch_name,
             )
 
     def _build_worker(self, session_id: uuid.UUID, repo_context: RepoContext, sandbox, installation_token: str) -> SessionWorker:
@@ -97,5 +107,21 @@ class SessionWorkerFactory:
                 sandbox = None
         if sandbox is None:
             sandbox = await E2BSandbox.create(self._e2b_template, self._e2b_api_key)
+            # Persist the replacement -- the same leak `_recover_sandbox()`
+            # had before its own fix (`claude/long-running-task-reliability-plan.md`
+            # §A): without this, a fallback-created sandbox here is
+            # invisible to the DB entirely, untracked by the sweep and
+            # unrecoverable if this session's own teardown is ever
+            # skipped. Exercised constantly by `/resume`
+            # (`claude/session-resume-plan.md`) -- an ended session's old
+            # sandbox is always already dead, so this fallback is the
+            # normal path there, not the rare one.
+            async with db_session_scope(self._session_factory) as db:
+                repo = SandboxRepository(db)
+                if sandbox_row is not None:
+                    await repo.mark_terminated_by_e2b_id(
+                        sandbox_row.e2b_sandbox_id, terminated_at=datetime.now(timezone.utc)
+                    )
+                await repo.create(session_id=session_id, e2b_sandbox_id=sandbox.sandbox_id)
 
         return self._build_worker(session_id, repo_context, sandbox, installation_token)

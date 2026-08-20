@@ -16,14 +16,27 @@ export function ChatView({
   liveStatus?: string | null;
   sandboxOpen: boolean;
   onToggleSandbox: () => void;
-  onSend: (text: string) => Promise<void>;
+  onSend: (text: string, isResume?: boolean) => Promise<void>;
 }) {
-  // FR-9: a follow-up can only actually be *delivered* while Agent Loop
-  // is sitting on a `message_user(BLOCK)` tool call waiting for one --
-  // there's no running worker to receive it otherwise (see
-  // agent_loop/app/routers/internal.py's send_message, which 404s once
-  // the session isn't active anywhere).
-  const canReply = session.status === "blocked";
+  // FR-9 + session resume (claude/session-resume-plan.md): a reply while
+  // `blocked` gets delivered to the still-running worker directly; a
+  // reply to an `idle` or `failed` session instead wakes a fresh worker
+  // back up with the full prior conversation reloaded from Postgres --
+  // backend picks between the two transparently (SessionService.forward_message),
+  // so the frontend just needs to stop hard-blocking the composer for
+  // the ended states too.
+  const canReply = session.status === "blocked" || session.status === "idle" || session.status === "failed";
+  // Only the idle/failed cases are a real "wake this back up" resume --
+  // a blocked reply just reaches an already-running worker directly.
+  const isResume = session.status === "idle" || session.status === "failed";
+  const composerPlaceholder =
+    session.status === "blocked"
+      ? undefined
+      : session.status === "idle"
+        ? "Send a message to pick this session back up…"
+        : session.status === "failed"
+          ? "Session failed — send a message to try again…"
+          : "Waiting for the agent…";
 
   return (
     // min-w-0 is load-bearing, not decorative: without it this flex item
@@ -57,8 +70,8 @@ export function ChatView({
 
       <Composer
         disabled={!canReply}
-        placeholder={canReply ? undefined : "Waiting for the agent…"}
-        onSend={onSend}
+        placeholder={composerPlaceholder}
+        onSend={(text) => onSend(text, isResume)}
       />
     </div>
   );

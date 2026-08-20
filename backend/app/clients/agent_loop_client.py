@@ -127,10 +127,30 @@ class AgentLoopClient:
     async def send_message(self, session_id: uuid.UUID, text: str) -> None:
         """Resume a session that's paused on a `BLOCK` tool call (a
         follow-up message from the user). Routed directly to the
-        instance that actually owns this session right now -- see flow 04."""
+        instance that actually owns this session right now -- see flow 04.
+        Raises `SessionNotActive` if there's no live owner -- see
+        `resume_session` below for the genuinely-ended-session case that
+        distinguishes from."""
         base_url = await self._owner_base_url(session_id)
         response = await self._http.post(
             f"{base_url}/internal/sessions/{session_id}/messages",
+            json={"text": text},
+            headers={"X-Internal-Secret": self._secret},
+        )
+        response.raise_for_status()
+
+    async def resume_session(self, session_id: uuid.UUID, text: str) -> None:
+        """Wake a genuinely *ended* session (`idle`/`failed`) back up --
+        `claude/session-resume-plan.md`. Unlike `send_message`, there's no
+        owner to route to (the worker doesn't exist anymore), so this
+        picks a fresh instance the same way `start_session` does for a
+        brand-new session, not `_owner_base_url`. No sandbox_id or
+        installation token to hand over either -- Agent Loop's `/resume`
+        handler mints its own via `SessionWorkerFactory.rehydrate`,
+        exactly like crash recovery already does."""
+        base_url = await self._pick_instance_for_new_session()
+        response = await self._http.post(
+            f"{base_url}/internal/sessions/{session_id}/resume",
             json={"text": text},
             headers={"X-Internal-Secret": self._secret},
         )

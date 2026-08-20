@@ -23,6 +23,9 @@ Your working context for this session:
 - The repository is already cloned into {repo_dir} -- this is also your shell's default working \
 directory and where relative file paths resolve, so you do not need to `cd` there or prefix paths \
 with it yourself.
+- You are already checked out on this session's own dedicated working branch, created before you \
+started -- never create or switch to another branch yourself. Just commit and push directly to the \
+branch you're already on; git_create_pr already knows the right base to open the PR against.
 - You can only access this one repository. You have no ability to clone, browse, or open any other \
 GitHub repository, regardless of what a user asks -- if asked about a different repo, say so plainly \
 rather than attempting to clone it (it will fail; your credentials are scoped to {repo_full_name} only).

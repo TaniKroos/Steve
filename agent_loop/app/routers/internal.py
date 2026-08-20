@@ -68,6 +68,45 @@ async def start_session(
     return {"status": "accepted"}
 
 
+class ResumeSessionRequest(BaseModel):
+    text: str
+
+
+@router.post("/{session_id}/resume")
+async def resume_session(
+    session_id: uuid.UUID,
+    body: ResumeSessionRequest,
+    ownership: OwnershipRegistry = Depends(get_ownership),
+    worker_registry: WorkerRegistry = Depends(get_worker_registry),
+    factory: SessionWorkerFactory = Depends(get_worker_factory),
+) -> dict:
+    """Wake a genuinely *ended* session (`idle`/`failed`) back up with a
+    new message -- distinct from `/messages` below, which only works for
+    a session whose worker is still alive (`claude/session-resume-plan.md`).
+    Same shape as `/start`: claim ownership, build a worker, hand it to
+    `run_owned_session` as a background task. The only real difference is
+    `rehydrate()` instead of `start_new()` (no pre-provisioned sandbox_id
+    to connect to -- this mints its own token and sandbox) and
+    `resume_message=` instead of a fresh `initial_message`, so the full
+    prior conversation gets reloaded from Postgres instead of discarded."""
+    if not await ownership.claim_session(session_id):
+        raise HTTPException(status_code=409, detail="session already owned by an active instance")
+    await ownership.increment_load()
+
+    try:
+        worker = await factory.rehydrate(session_id)
+    except Exception as exc:
+        logger.exception("failed to resume session %s", session_id)
+        await ownership.release_session(session_id)
+        await ownership.decrement_load()
+        raise HTTPException(status_code=502, detail=f"failed to resume session: {exc}") from exc
+
+    asyncio.create_task(
+        run_owned_session(ownership, worker_registry, session_id, worker, None, resume_message=body.text)
+    )
+    return {"status": "accepted"}
+
+
 @router.post("/{session_id}/messages")
 async def send_message(
     session_id: uuid.UUID,

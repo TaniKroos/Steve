@@ -7,6 +7,7 @@ in (same browser, same session cookie) for this to know *whose*
 installation this is."""
 
 import secrets
+import uuid
 from urllib.parse import urlencode
 
 from cloudagent_core.db.models import User
@@ -14,7 +15,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
 
 from app.config import Settings, get_settings
-from app.dependencies import get_current_user, get_github_service
+from app.dependencies import get_current_user, get_github_service, get_repo_repo
+from app.exceptions import PermissionDenied
+from app.repositories.repo_repository import RepoRepository
 from app.schemas.github import RepoResponse
 from app.services.github_service import GithubService
 
@@ -89,3 +92,20 @@ async def list_repos(
     # belongs in GithubService.list_repos_for_user, not duplicated here.
     repos = await github_service.list_repos_for_user(user)
     return [RepoResponse.model_validate(r) for r in repos]
+
+
+@router.get("/repos/{repo_id}/branches")
+async def list_branches(
+    repo_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    repo_repo: RepoRepository = Depends(get_repo_repo),
+    github_service: GithubService = Depends(get_github_service),
+) -> list[str]:
+    """Powers the base-branch picker at session creation
+    (claude/session-resume-plan.md) -- always a live GitHub call, see
+    GithubService.list_branches_for_repo's own docstring for why this
+    isn't synced/cached like the repo list."""
+    repo = await repo_repo.get(repo_id)
+    if repo is None or repo.installation.user_id != user.id:
+        raise PermissionDenied(f"repo {repo_id} not accessible to user {user.id}")
+    return await github_service.list_branches_for_repo(repo)

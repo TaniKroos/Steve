@@ -98,6 +98,20 @@ class RepoContext:
     default_branch: str
     installation_id: int  # GitHub's own numeric installation id
     repo_github_id: int
+    # This session's own dedicated working branch, and what it was
+    # branched from -- always both set at session creation now (user's
+    # own call, claude/session-resume-plan.md: never commit directly to
+    # an existing branch, always a fresh one). `base_branch` feeds
+    # git_create_pr's `--base` (not always `default_branch` -- a session
+    # can be based on any branch); `branch_name` is what a fresh start
+    # creates and what a resume checks back out.
+    base_branch: str
+    # `str | None`, not `str`, despite every *new* session always setting
+    # this now (SessionCreateRequest requires it) -- the DB column stays
+    # nullable for sessions created before this feature existed, and
+    # `_create_working_branch` falls back to generating one for that
+    # legacy case rather than assuming it's always present.
+    branch_name: str | None
 
 
 class _ScopedSecrets:
@@ -173,19 +187,33 @@ class SessionWorker:
         # instead of waiting out the rest of the interval, harmless.
         self._last_timeout_extend: datetime | None = None
 
-    async def run(self, initial_message: str | None) -> None:
-        """`initial_message=None` means this is a crash-recovery resume
-        (plan §5.4) -- the one path that reloads history from Postgres
-        instead of receiving it fresh from the caller."""
+    async def run(self, initial_message: str | None, *, resume_message: str | None = None) -> None:
+        """`initial_message=None` means this is either a crash-recovery
+        resume (plan §5.4) or a session-resume (`claude/session-resume-plan.md`,
+        a genuinely *ended* session -- idle or failed -- the user wants to
+        continue) -- both reload full history from Postgres instead of
+        starting fresh, since discarding what came before would leave the
+        model acting with no memory of the prior conversation even though
+        Postgres still has it. `resume_message`, only meaningful alongside
+        `initial_message=None`, is the new message that woke the session
+        back up -- appended after history loads, mirroring exactly what
+        `_block_until_reply` already does for a live worker's follow-up,
+        just applied at cold-start instead of mid-loop."""
         try:
             await self._connect_and_clone(self._installation_token)
 
             if initial_message is not None:
+                await self._create_working_branch()
                 content = [{"type": "text", "text": initial_message}]
                 self._history = [{"role": "user", "content": content}]
                 await self._save_message(role="user", content=content)
             else:
+                await self._checkout_existing_branch()
                 self._history = await self._load_history()
+                if resume_message is not None:
+                    content = [{"type": "text", "text": resume_message}]
+                    self._history.append({"role": "user", "content": content})
+                    await self._save_message(role="user", content=content)
 
             await self._update_status("running")
             await self._run_with_sandbox_recovery()
@@ -523,6 +551,48 @@ class SessionWorker:
         if auth.exit_code != 0:
             raise RuntimeError(f"gh auth failed: {auth.stderr}")
 
+    async def _create_working_branch(self) -> None:
+        """Fresh `/start` only (`claude/session-resume-plan.md`): the repo
+        clone above already checked out the repo's own default branch, so
+        get onto `base_branch` first if that's a different branch, then
+        create and switch to this session's own dedicated branch. Every
+        session always gets one -- the user's own call, made explicitly
+        so a session can never end up committing straight to an existing
+        branch, base included."""
+        base = self._repo_context.base_branch
+        if base != self._repo_context.default_branch:
+            checkout = await self._sandbox.run_command(
+                f"git -C {shlex.quote(_REPO_DIR)} checkout {shlex.quote(base)}", timeout=30
+            )
+            if checkout.exit_code != 0:
+                raise RuntimeError(f"failed to checkout base branch {base!r}: {checkout.stderr}")
+
+        # `branch_name` is `str | None` on RepoContext only for sessions
+        # created before this feature existed (SessionCreateRequest has
+        # required it ever since) -- fall back to generating one rather
+        # than crashing on that legacy case.
+        branch = self._repo_context.branch_name or f"cloudagent/{self.session_id}"
+        create = await self._sandbox.run_command(
+            f"git -C {shlex.quote(_REPO_DIR)} checkout -b {shlex.quote(branch)}", timeout=30
+        )
+        if create.exit_code != 0:
+            raise RuntimeError(f"failed to create working branch {branch!r}: {create.stderr}")
+
+    async def _checkout_existing_branch(self) -> None:
+        """Shared by crash recovery (`_recover_sandbox`) and a genuine
+        cold-start resume/rehydrate (`run`, `initial_message=None`) --
+        both need the same thing: get back onto this session's own
+        branch, which was already created by `_create_working_branch` at
+        session start and must still exist (it's real work committed to a
+        real branch, not something that can be recreated from nothing).
+        A session with no `branch_name` at all (never got past creation,
+        or predates this feature) has nothing to check out -- stay on
+        whatever the clone above left it on."""
+        if self._repo_context.branch_name:
+            await self._sandbox.run_command(
+                f"git -C {shlex.quote(_REPO_DIR)} checkout {shlex.quote(self._repo_context.branch_name)}", timeout=30
+            )
+
     # ------------------------------------------------------------------
     # Idle/blocked pause-resume (claude/long-running-task-reliability-plan.md
     # §A) -- deliberately separate from sandbox-crash recovery below:
@@ -682,12 +752,7 @@ class SessionWorker:
             self._repo_context.installation_id, repository_ids=[self._repo_context.repo_github_id]
         )
         await self._connect_and_clone(fresh_token)
-
-        session = await self._get_session_with_repo()
-        if session and session.branch_name:
-            await self._sandbox.run_command(
-                f"git -C {shlex.quote(_REPO_DIR)} checkout {shlex.quote(session.branch_name)}", timeout=30
-            )
+        await self._checkout_existing_branch()
         # Covers a case new to this recovery path since pause/resume was
         # added: if `_resume_sandbox()` (called from `_block_until_reply`)
         # raised and fell through to here, status is still "blocked" in
@@ -773,6 +838,7 @@ class SessionWorker:
             repo_full_name=self._repo_context.repo_full_name,
             repo_dir=_REPO_DIR,
             default_branch=self._repo_context.default_branch,
+            base_branch=self._repo_context.base_branch,
             secrets=_ScopedSecrets(self._session_factory),
             github=self._github_client,
             record_pr_opened=self._record_pr_opened,
@@ -794,10 +860,15 @@ class SessionWorker:
     async def _update_status(self, status: str) -> None:
         async with db_session_scope(self._session_factory) as db:
             await SessionRepository(db).update_status(self.session_id, status)
-
-    async def _get_session_with_repo(self):
-        async with db_session_scope(self._session_factory) as db:
-            return await SessionRepository(db).get_with_repo(self.session_id)
+        # Previously DB-only -- the frontend's `sessions` list (sidebar
+        # status dots, the composer's canReply gate) had no real-time
+        # signal for this at all, only a poll that doesn't even start if
+        # the only known session was already idle (exactly the case a
+        # freshly-resumed session is in). The free-text `status` events
+        # published elsewhere in this file are a different thing (a
+        # human-readable progress banner, e.g. "cloning repository...")
+        # and were never meant to carry the actual status enum.
+        await self._events.publish(self.session_id, {"type": "session_status", "status": status})
 
     async def _record_pr_opened(self, branch_name: str, pr_number: int, pr_url: str) -> None:
         async with db_session_scope(self._session_factory) as db:

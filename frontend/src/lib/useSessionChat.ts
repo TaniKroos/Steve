@@ -8,9 +8,21 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { toChatMessages } from "./transform";
-import type { ChatMessage, FileEditEntry, FileRemovedEntry, SessionEvent, TerminalLine, ToolCall } from "../types";
+import type {
+  ChatMessage,
+  FileEditEntry,
+  FileRemovedEntry,
+  SessionEvent,
+  SessionStatus,
+  TerminalLine,
+  ToolCall,
+} from "../types";
 
-export function useSessionChat(sessionId: string | null, onSessionUpdate: (prUrl: string, prNumber: number) => void) {
+export function useSessionChat(
+  sessionId: string | null,
+  onSessionUpdate: (prUrl: string, prNumber: number) => void,
+  onStatusChange: (status: SessionStatus) => void,
+) {
   const [history, setHistory] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState<ChatMessage | null>(null);
   const [liveStatus, setLiveStatus] = useState<string | null>(null);
@@ -38,6 +50,8 @@ export function useSessionChat(sessionId: string | null, onSessionUpdate: (prUrl
   // and reopen the connection far more often than the session actually changes).
   const onSessionUpdateRef = useRef(onSessionUpdate);
   onSessionUpdateRef.current = onSessionUpdate;
+  const onStatusChangeRef = useRef(onStatusChange);
+  onStatusChangeRef.current = onStatusChange;
 
   // Load real history whenever the selected session changes. Any
   // in-progress draft/live-status from the *previous* session gets
@@ -167,6 +181,10 @@ export function useSessionChat(sessionId: string | null, onSessionUpdate: (prUrl
           setLiveStatus(event.text);
           break;
 
+        case "session_status":
+          onStatusChangeRef.current(event.status);
+          break;
+
         case "done":
           setLiveStatus(null);
           onSessionUpdateRef.current(event.pr_url, event.pr_number);
@@ -182,7 +200,7 @@ export function useSessionChat(sessionId: string | null, onSessionUpdate: (prUrl
     return () => source.close();
   }, [sessionId]);
 
-  const send = async (text: string) => {
+  const send = async (text: string, isResume = false) => {
     if (!sessionId) return;
     // Optimistic append -- the real row will also come back through
     // history on the next session load, but showing it immediately
@@ -191,6 +209,15 @@ export function useSessionChat(sessionId: string | null, onSessionUpdate: (prUrl
       ...h,
       { id: `local-${Date.now()}`, role: "user", text, createdAt: new Date().toISOString() },
     ]);
+    if (isResume) {
+      // Waking a genuinely-ended session back up (claude/session-resume-plan.md)
+      // means minting a fresh token and standing up a new sandbox before
+      // Agent Loop's own progress events ("preparing sandbox...",
+      // "cloning repository...") start arriving -- that can take a few
+      // real seconds with zero feedback otherwise. This is overwritten
+      // the moment the first genuine status event lands.
+      setLiveStatus("Resuming session…");
+    }
     await api.sendMessage(sessionId, text);
   };
 

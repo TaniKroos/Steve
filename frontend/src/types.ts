@@ -28,6 +28,7 @@ export interface RemoteSession {
   repo_id: string;
   status: string;
   title: string | null;
+  base_branch: string | null;
   branch_name: string | null;
   pr_number: number | null;
   pr_url: string | null;
@@ -127,6 +128,7 @@ export type SessionEvent =
   | { type: "file_removed"; path: string }
   | { type: "message_complete" }
   | { type: "status"; text: string }
+  | { type: "session_status"; status: SessionStatus }
   | { type: "done"; pr_url: string; pr_number: number };
 
 // --- Live workspace view (claude/live-workspace-view-plan.md) ---

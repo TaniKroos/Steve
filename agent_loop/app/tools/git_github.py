@@ -93,7 +93,7 @@ class GithubApiClient:
 
 class GitCreatePrTool(Tool):
     name = "git_create_pr"
-    description = "Push the current branch (if not already pushed) and open a pull request against the default branch."
+    description = "Push the current branch (if not already pushed) and open a pull request against the branch this session's work is based on."
     parameters = {
         "type": "object",
         "properties": {"title": {"type": "string"}, "body": {"type": "string"}},
@@ -114,7 +114,7 @@ class GitCreatePrTool(Tool):
         cmd = (
             f"cd {shlex.quote(context.repo_dir)} && "
             f"gh pr create --title {shlex.quote(title)} --body-file {shlex.quote(body_path)} "
-            f"--base {shlex.quote(context.default_branch)}"
+            f"--base {shlex.quote(context.base_branch)}"
         )
         outcome = await context.sandbox.run_command(cmd, timeout=60)
         if outcome.exit_code != 0:

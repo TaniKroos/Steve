@@ -92,3 +92,46 @@ class GithubClient:
                 break
             page += 1
         return repos
+
+    async def list_branches(self, installation_token: str, owner: str, name: str) -> list[dict]:
+        """Powers the base-branch picker at session creation
+        (claude/session-resume-plan.md) -- fetched live, not cached like
+        the repo list is: branches change far more often, and this is
+        only ever consulted at the one moment a user is starting a
+        session, not displayed across a long-lived UI session the way the
+        repo list is. Fully paginated for the same reason
+        `list_installation_repos` above is -- that one silently dropping
+        anything past page 1 was a real bug, not a hypothetical one."""
+        branches: list[dict] = []
+        page = 1
+        while True:
+            response = await self._http.get(
+                f"{_GITHUB_API_BASE}/repos/{owner}/{name}/branches",
+                headers={
+                    "Authorization": f"Bearer {installation_token}",
+                    "Accept": "application/vnd.github+json",
+                },
+                params={"per_page": 100, "page": page},
+            )
+            response.raise_for_status()
+            page_branches = response.json()
+            branches.extend(page_branches)
+            if len(page_branches) < 100:
+                break
+            page += 1
+        return branches
+
+    async def get_pull_request(self, installation_token: str, owner: str, name: str, pr_number: int) -> dict:
+        """Used to check whether a session's PR was merged before letting
+        a resume proceed (claude/session-resume-plan.md) -- a merged PR is
+        a dead end (GitHub has no "reopen and add commits" for a merged
+        PR the way it does for one that's simply closed), so resuming a
+        session whose PR is already merged should refuse outright rather
+        than silently reusing a branch whose work is already fully
+        upstream."""
+        response = await self._http.get(
+            f"{_GITHUB_API_BASE}/repos/{owner}/{name}/pulls/{pr_number}",
+            headers={"Authorization": f"Bearer {installation_token}", "Accept": "application/vnd.github+json"},
+        )
+        response.raise_for_status()
+        return response.json()

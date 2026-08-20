@@ -35,7 +35,12 @@ class ToolContext:
     repo_id: uuid.UUID
     repo_full_name: str  # "owner/name"
     repo_dir: str  # absolute path the repo was cloned into, inside the sandbox
-    default_branch: str
+    default_branch: str  # the *repo's* overall default branch -- not necessarily this session's own base
+    # What this session's own working branch was created from -- what
+    # git_create_pr opens the PR against. Distinct from `default_branch`:
+    # a session can be based on any existing branch, not only the repo's
+    # default one (claude/session-resume-plan.md).
+    base_branch: str
     secrets: "SecretRepository"
     github: "GithubApiClient"
     # Bound closure (constructed once by SessionWorker) that persists a

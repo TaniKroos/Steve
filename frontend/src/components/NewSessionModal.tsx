@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ArrowUp, GitBranch, Loader2, X } from "lucide-react";
 import { ApiError, api } from "../lib/api";
 import type { GithubRepo, RemoteSession } from "../types";
@@ -20,13 +20,51 @@ export function NewSessionModal({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Every session always gets its own dedicated branch, created from
+  // `baseBranch` and named `branchName` -- never commits land directly
+  // on an existing branch, base included (claude/session-resume-plan.md).
+  const selectedRepo = repos.find((r) => r.id === repoId);
+  const [branches, setBranches] = useState<string[]>([]);
+  const [branchesLoading, setBranchesLoading] = useState(false);
+  const [baseBranch, setBaseBranch] = useState("");
+  const [branchName, setBranchName] = useState("");
+
+  // Refetched from GitHub every time the selected repo changes -- always
+  // live, never cached (see api.branches's own comment for why).
+  useEffect(() => {
+    if (!repoId || !selectedRepo) {
+      setBranches([]);
+      return;
+    }
+    let cancelled = false;
+    setBranchesLoading(true);
+    setBaseBranch(selectedRepo.default_branch);
+    api
+      .branches(repoId)
+      .then((remote) => {
+        if (!cancelled) setBranches(remote);
+      })
+      .catch(() => {
+        // Best-effort -- the picker just falls back to the repo's own
+        // known default branch as the only option (still set above),
+        // rather than blocking session creation entirely over this.
+        if (!cancelled) setBranches([]);
+      })
+      .finally(() => {
+        if (!cancelled) setBranchesLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [repoId, selectedRepo]);
+
   const handleSubmit = async () => {
-    if (!repoId || !message.trim()) return;
+    if (!repoId || !message.trim() || !baseBranch || !branchName.trim()) return;
     setSubmitting(true);
     setError(null);
     try {
       const trimmed = message.trim();
-      const session = await api.createSession(repoId, trimmed);
+      const session = await api.createSession(repoId, trimmed, baseBranch, branchName.trim());
       onCreated(session, trimmed);
     } catch (err) {
       // A 503 here means Agent Loop rejected or couldn't be reached for
@@ -84,6 +122,48 @@ export function NewSessionModal({
               </div>
             </div>
 
+            <div className="flex gap-3">
+              <div className="flex-1">
+                <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wider text-zinc-600">
+                  Base branch
+                </label>
+                <div className="flex items-center gap-2 rounded-lg border border-white/[0.08] bg-white/[0.02] px-2.5 py-2">
+                  <GitBranch size={14} className="shrink-0 text-zinc-600" />
+                  <select
+                    value={baseBranch}
+                    onChange={(e) => setBaseBranch(e.target.value)}
+                    disabled={submitting || branchesLoading}
+                    className="w-full bg-transparent text-[13px] text-zinc-200 focus:outline-none disabled:opacity-50"
+                  >
+                    {/* The repo's own known default is always a valid option, even before (or if)
+                        the live fetch above resolves -- and de-duped below in case it's also in
+                        the fetched list, which it usually is. */}
+                    {selectedRepo &&
+                      [selectedRepo.default_branch, ...branches.filter((b) => b !== selectedRepo.default_branch)].map(
+                        (b) => (
+                          <option key={b} value={b} className="bg-surface">
+                            {b}
+                          </option>
+                        ),
+                      )}
+                  </select>
+                </div>
+              </div>
+
+              <div className="flex-1">
+                <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wider text-zinc-600">
+                  New branch name
+                </label>
+                <input
+                  value={branchName}
+                  onChange={(e) => setBranchName(e.target.value)}
+                  disabled={submitting}
+                  placeholder="feature/my-change"
+                  className="w-full rounded-lg border border-white/[0.08] bg-white/[0.02] px-2.5 py-2 text-[13px] text-zinc-200 placeholder:text-zinc-600 focus:border-white/[0.16] focus:outline-none"
+                />
+              </div>
+            </div>
+
             <div>
               <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wider text-zinc-600">
                 What should the agent do?
@@ -106,7 +186,7 @@ export function NewSessionModal({
 
             <button
               onClick={handleSubmit}
-              disabled={submitting || !repoId || !message.trim()}
+              disabled={submitting || !repoId || !message.trim() || !baseBranch || !branchName.trim()}
               className="flex w-full items-center justify-center gap-2 rounded-xl bg-zinc-200 py-2.5 text-sm font-semibold text-zinc-900 transition disabled:opacity-40 enabled:hover:scale-[1.01] enabled:hover:bg-zinc-100"
             >
               {submitting ? (

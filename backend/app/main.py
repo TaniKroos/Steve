@@ -32,6 +32,7 @@ from app.exceptions import (
     PermissionDenied,
     RepoNotAccessible,
     SessionNotActive,
+    SessionPrAlreadyMerged,
 )
 from app.routers import auth, events, github, sessions
 from app.services.sandbox_sweep import SandboxSweep
@@ -149,6 +150,14 @@ async def session_not_active_handler(_request: Request, exc: SessionNotActive) -
     # -- Agent Loop itself may be perfectly reachable). Also what a live
     # workspace view read (files/diff) gets back when there's no live
     # owner to ask -- see claude/live-workspace-view-plan.md §7.
+    return JSONResponse(status_code=status.HTTP_409_CONFLICT, content={"detail": str(exc)})
+
+
+@app.exception_handler(SessionPrAlreadyMerged)
+async def session_pr_already_merged_handler(_request: Request, exc: SessionPrAlreadyMerged) -> JSONResponse:
+    # 409 Conflict, same status as SessionNotActive but a distinct body --
+    # the frontend needs to tell "still starting up, try again" apart
+    # from "this is a dead end, start a new session" (claude/session-resume-plan.md).
     return JSONResponse(status_code=status.HTTP_409_CONFLICT, content={"detail": str(exc)})
 
 

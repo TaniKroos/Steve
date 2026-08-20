@@ -12,6 +12,14 @@ from pydantic import BaseModel, ConfigDict
 class SessionCreateRequest(BaseModel):
     repo_id: uuid.UUID
     initial_message: str
+    # Every session gets its own dedicated branch, always created fresh
+    # off some existing branch -- never commits land directly on
+    # `base_branch` itself (claude/session-resume-plan.md, a deliberate
+    # choice to make sure a session can never touch a real branch like
+    # main/v1 directly). `branch_name` is user-typed, not agent-chosen,
+    # so it's known before the agent even starts.
+    base_branch: str
+    branch_name: str
 
 
 class SessionResponse(BaseModel):
@@ -21,6 +29,7 @@ class SessionResponse(BaseModel):
     repo_id: uuid.UUID
     status: str
     title: str | None
+    base_branch: str | None
     branch_name: str | None
     pr_number: int | None
     pr_url: str | None
