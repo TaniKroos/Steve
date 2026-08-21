@@ -83,6 +83,10 @@ async def callback(
     # signed session cookie. See dependencies.get_current_user for the
     # other end of this.
     request.session["user_id"] = str(user.id)
+    # Stashed alongside user_id so the correlation-logging middleware
+    # (main.py) can read it straight from the cookie on every request --
+    # no DB lookup needed just to tag a log line with who made the request.
+    request.session["github_login"] = user.github_login
 
     # Straight to the app view, not the marketing/login root -- the
     # frontend route at "/" would otherwise show the login screen again

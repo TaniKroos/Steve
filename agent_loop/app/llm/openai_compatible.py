@@ -35,6 +35,7 @@ import json
 import logging
 from collections.abc import AsyncIterator
 
+import httpx
 from openai import APIError, APIStatusError
 
 from app.llm.port import LLMPort, StreamEvent, ToolUseBlock, TurnResult
@@ -59,18 +60,45 @@ _FINISH_REASON_MAP = {
 # for the failed attempt stay sent (briefly duplicated on the frontend if a
 # retry text-streams differently) -- an acceptable cosmetic cost for turning
 # an otherwise-fatal generation blip into a session that just keeps going.
-#
-# `APIStatusError` (a real HTTP-level response -- 429 rate limit, 413
-# request-too-large, 5xx) is deliberately excluded from that retry and
-# handled separately, caught first since it's a subclass of the plain
-# `APIError` the block above targets: an HTTP-level rejection reflects
-# something about the *request itself* (too many tokens for the account's
-# per-minute limit, in the case actually hit in testing) that doesn't
-# change between attempts -- retrying it isn't "a second chance", it's
-# the identical oversized request failing the identical way, 1-2 seconds
-# slower each time for no benefit.
 _MAX_GENERATION_RETRIES = 2
-_RETRY_DELAY_SECONDS = 1.0
+_GENERATION_RETRY_DELAY_SECONDS = 1.0
+
+# `APIStatusError` (a real HTTP-level response) used to be excluded from
+# retry entirely on the theory that "retrying an identical rejected request
+# doesn't help" -- true for 400/413/401 (something about the request itself
+# is wrong, and will still be wrong on attempt 2), but wrong for 429 (rate
+# limit) and 5xx (provider-side trouble): both are exactly the transient,
+# not-the-request's-fault class of failure that backoff-retry exists for.
+# Confirmed as a real gap in production: two concurrent sessions against one
+# Azure deployment's shared quota produced a real 429 that killed a session
+# outright (`claude/Bugs/Aug21.md` #1).
+#
+# Raw transport-level exceptions (`httpx.ReadTimeout`, `httpx.ConnectError`,
+# etc.) get the identical transient treatment. These aren't `openai.APIError`
+# subclasses at all -- they're httpx/httpcore exceptions that surface while
+# iterating the stream (`async for chunk in response`), so they're
+# unreachable by the `APIError`/`APIStatusError` handling below no matter
+# what those blocks do. Also confirmed in production: a genuine network blip
+# mid-stream (`claude/Bugs/Aug21.md` #2), distinct from and more fundamental
+# than the 429 case since no status-code split can ever catch it.
+_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+_MAX_TRANSIENT_RETRIES = 4
+_TRANSIENT_BASE_DELAY_SECONDS = 2.0
+_TRANSIENT_MAX_DELAY_SECONDS = 30.0
+
+
+def _transient_retry_delay(attempt: int, retry_after_header: str | None) -> float:
+    """Azure/OpenAI send `Retry-After` (seconds) on real 429s -- honor it
+    over our own guess when present, since the provider knows its own quota
+    reset time better than an exponential backoff schedule does. Falls back
+    to `_TRANSIENT_BASE_DELAY_SECONDS * 2**attempt` (capped) for 5xx and
+    transport errors, which never carry that header."""
+    if retry_after_header:
+        try:
+            return max(float(retry_after_header), 0.0)
+        except ValueError:
+            pass
+    return min(_TRANSIENT_BASE_DELAY_SECONDS * (2**attempt), _TRANSIENT_MAX_DELAY_SECONDS)
 
 
 class OpenAICompatibleClient(LLMPort):
@@ -108,7 +136,14 @@ class OpenAICompatibleClient(LLMPort):
             openai_messages.extend(self._to_openai_messages(message))
         openai_tools = [self._to_openai_tool(t) for t in tools]
 
-        for attempt in range(_MAX_GENERATION_RETRIES + 1):
+        # Two independent retry budgets, not one shared counter -- a
+        # malformed-generation blip and a transient rate-limit/network blip
+        # are different failure classes with different odds of recurring,
+        # so exhausting one budget shouldn't cost attempts from the other.
+        generation_attempt = 0
+        transient_attempt = 0
+
+        while True:
             text_parts: list[str] = []
             # Keyed by the delta's `index` (its position among tool calls
             # in *this* turn, not a stable id) -- OpenAI-compatible
@@ -158,12 +193,53 @@ class OpenAICompatibleClient(LLMPort):
                     if choice.finish_reason:
                         stop_reason = _FINISH_REASON_MAP.get(choice.finish_reason, choice.finish_reason)
             except APIStatusError as exc:
-                # A real HTTP-level rejection (429 rate limit, 413 request
-                # too large, 5xx) -- not retried, see the module-level
-                # comment on why. Fail immediately with the provider's own
-                # explanation intact rather than burning two pointless
-                # retries first.
+                # 429/5xx are transient -- the provider's own quota/health,
+                # not something wrong with our request -- so they share the
+                # transient budget with the transport-error case below.
+                # 400/413/401/etc are still fail-fast: retrying the identical
+                # rejected request wouldn't change anything about it.
+                if exc.status_code in _RETRYABLE_STATUS_CODES and transient_attempt < _MAX_TRANSIENT_RETRIES:
+                    delay = _transient_retry_delay(transient_attempt, exc.response.headers.get("retry-after"))
+                    logger.warning(
+                        "%s: %d response (attempt %d/%d), retrying in %.1fs -- body=%r",
+                        type(self).__name__,
+                        exc.status_code,
+                        transient_attempt + 1,
+                        _MAX_TRANSIENT_RETRIES,
+                        delay,
+                        exc.body,
+                    )
+                    transient_attempt += 1
+                    await asyncio.sleep(delay)
+                    continue
                 logger.error("%s: request rejected -- body=%r", type(self).__name__, exc.body)
+                raise
+            except httpx.TransportError as exc:
+                # Raw network-level failure (read timeout, connection reset,
+                # DNS blip) mid-request or mid-stream -- not an APIError at
+                # all, see the module-level comment. Same transient budget
+                # and backoff as the 429/5xx case above; no `Retry-After`
+                # header exists for this class, so it always uses the
+                # exponential-backoff fallback.
+                if transient_attempt < _MAX_TRANSIENT_RETRIES:
+                    delay = _transient_retry_delay(transient_attempt, retry_after_header=None)
+                    logger.warning(
+                        "%s: %s (attempt %d/%d), retrying in %.1fs",
+                        type(self).__name__,
+                        type(exc).__name__,
+                        transient_attempt + 1,
+                        _MAX_TRANSIENT_RETRIES,
+                        delay,
+                    )
+                    transient_attempt += 1
+                    await asyncio.sleep(delay)
+                    continue
+                logger.error(
+                    "%s: %s after %d attempts, giving up",
+                    type(self).__name__,
+                    type(exc).__name__,
+                    transient_attempt,
+                )
                 raise
             except APIError as exc:
                 # `exc.body` is the provider's decoded error response --
@@ -172,18 +248,22 @@ class OpenAICompatibleClient(LLMPort):
                 # malformed output that got rejected). The bare exception
                 # message alone doesn't carry that, so logging the message
                 # without this is a black box the next time this happens.
-                if attempt < _MAX_GENERATION_RETRIES:
+                if generation_attempt < _MAX_GENERATION_RETRIES:
                     logger.warning(
                         "%s: generation failed (attempt %d/%d), retrying -- body=%r",
                         type(self).__name__,
-                        attempt + 1,
+                        generation_attempt + 1,
                         _MAX_GENERATION_RETRIES + 1,
                         exc.body,
                     )
-                    await asyncio.sleep(_RETRY_DELAY_SECONDS)
+                    generation_attempt += 1
+                    await asyncio.sleep(_GENERATION_RETRY_DELAY_SECONDS)
                     continue
                 logger.error(
-                    "%s: generation failed after %d attempts -- body=%r", type(self).__name__, attempt + 1, exc.body
+                    "%s: generation failed after %d attempts -- body=%r",
+                    type(self).__name__,
+                    generation_attempt + 1,
+                    exc.body,
                 )
                 raise
             else:

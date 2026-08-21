@@ -13,11 +13,14 @@ What lives here and nowhere else in this service:
 """
 
 import asyncio
+import logging
+import re
 from contextlib import asynccontextmanager
 
 import httpx
 from cloudagent_core.db.session import create_engine, create_session_factory
 from cloudagent_core.github_app import GithubApp
+from cloudagent_core.logging import bind_context, configure_logging, reset_context
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -36,6 +39,49 @@ from app.exceptions import (
 )
 from app.routers import auth, events, github, sessions
 from app.services.sandbox_sweep import SandboxSweep
+
+logger = logging.getLogger(__name__)
+
+# Every session-scoped route is `/api/sessions/{session_id}...` (see
+# routers/sessions.py, routers/events.py) -- matched by regex here rather
+# than read off FastAPI's resolved path_params, since those aren't
+# populated yet at the point ASGI middleware runs (routing happens further
+# in). `POST /api/sessions` itself (creating a brand-new session) has no
+# id yet at request time and correctly gets no correlation id.
+_SESSION_ID_RE = re.compile(r"^/api/sessions/([0-9a-fA-F-]{36})")
+
+
+class CorrelationMiddleware:
+    """Binds the correlation id (this request's target session_id, if
+    any) and the logged-in user's GitHub login into the logging
+    contextvars (cloudagent_core.logging) for the life of this request,
+    and logs the single "request received" line the logging policy calls
+    for -- see that module's docstring for the full design. A plain ASGI
+    middleware, not Starlette's BaseHTTPMiddleware: this app's core
+    feature is an SSE stream (routers/events.py), and
+    BaseHTTPMiddleware's response wrapping doesn't play well with
+    long-lived streaming responses.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request = Request(scope, receive)
+        path_match = _SESSION_ID_RE.match(request.url.path)
+        session_id = path_match.group(1) if path_match else None
+        github_login = request.session.get("github_login")
+
+        tokens = bind_context(session_id, github_login)
+        try:
+            logger.info("request received", extra={"http_method": request.method, "http_path": request.url.path})
+            await self.app(scope, receive, send)
+        finally:
+            reset_context(tokens)
 
 
 @asynccontextmanager
@@ -76,21 +122,25 @@ async def lifespan(app: FastAPI):
     await engine.dispose()
 
 
+settings = get_settings()
+configure_logging("backend", settings.axiom_token, settings.axiom_dataset)
+
 app = FastAPI(title="CloudAgent Backend", lifespan=lifespan)
 
-settings = get_settings()
-
-# CORS: only the frontend's own origin may call this API with credentials
-# (cookies) attached -- `allow_credentials=True` is required for the
-# session cookie to actually be sent cross-origin (frontend on :5173,
-# backend on :8000 during local dev).
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[settings.frontend_base_url],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Registration order below is load-bearing: `add_middleware` is LIFO --
+# the *last*-added middleware ends up outermost, running first on the way
+# in and last on the way out (confirmed against a real bug: registering
+# CorrelationMiddleware last put it outside SessionMiddleware, so it ran
+# before request.session existed at all and every request 500'd). Adding
+# CorrelationMiddleware first here makes it innermost (closest to the
+# router) so SessionMiddleware's cookie parsing has already happened by
+# the time it reads request.session["github_login"]. CORS goes last (so
+# it's outermost of all three) deliberately too -- it needs to wrap even
+# an error response from something deeper in the stack (an OPTIONS
+# preflight that hits a bug two layers in still needs CORS headers on the
+# resulting error response, or the browser just reports a misleading CORS
+# failure instead of the real 500).
+app.add_middleware(CorrelationMiddleware)
 
 # Starlette's built-in signed-cookie session middleware -- this is what
 # makes `request.session` a plain dict-like object in every route,
@@ -103,6 +153,18 @@ app.add_middleware(
     secret_key=settings.session_secret_key,
     same_site="lax",
     https_only=False,
+)
+
+# CORS: only the frontend's own origin may call this API with credentials
+# (cookies) attached -- `allow_credentials=True` is required for the
+# session cookie to actually be sent cross-origin (frontend on :5173,
+# backend on :8000 during local dev).
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[settings.frontend_base_url],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 app.include_router(auth.router)

@@ -17,6 +17,13 @@ from contextlib import asynccontextmanager
 
 from cloudagent_core.db.session import create_engine, create_session_factory
 from cloudagent_core.github_app import GithubApp
+from cloudagent_core.logging import (
+    CORRELATION_ID_HEADER,
+    GITHUB_LOGIN_HEADER,
+    bind_context,
+    configure_logging,
+    reset_context,
+)
 from fastapi import FastAPI
 from redis.asyncio import Redis
 
@@ -96,7 +103,49 @@ async def lifespan(app: FastAPI):
     await engine.dispose()
 
 
+class CorrelationMiddleware:
+    """Binds the correlation id / GitHub login that backend's own
+    AgentLoopClient (backend/app/clients/agent_loop_client.py) already
+    computed and forwarded as headers, so both services' log lines for
+    one transaction carry the identical value -- see
+    cloudagent_core.logging's module docstring for the full design. No
+    entry log here (unlike backend's CorrelationMiddleware): Agent Loop's
+    endpoints are internal-only, backend already logged the one
+    user-facing "request received" line for this transaction.
+
+    Plain ASGI middleware, not BaseHTTPMiddleware -- consistent with
+    backend's reasoning, even though Agent Loop's own endpoints aren't
+    themselves streaming (BaseHTTPMiddleware's overhead just isn't needed
+    here).
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        headers = dict(scope["headers"])
+        correlation_id = headers.get(CORRELATION_ID_HEADER.lower().encode())
+        github_login = headers.get(GITHUB_LOGIN_HEADER.lower().encode())
+
+        tokens = bind_context(
+            correlation_id.decode() if correlation_id else None,
+            github_login.decode() if github_login else None,
+        )
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            reset_context(tokens)
+
+
+settings = get_settings()
+configure_logging("agent-loop", settings.axiom_token, settings.axiom_dataset)
+
 app = FastAPI(title="CloudAgent Agent Loop", lifespan=lifespan)
+app.add_middleware(CorrelationMiddleware)
 
 app.include_router(internal.router)
 

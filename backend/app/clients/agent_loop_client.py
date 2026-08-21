@@ -23,6 +23,7 @@ the owning instance's `WorkerRegistry` holds that session's live
 import uuid
 
 import httpx
+from cloudagent_core.logging import correlation_headers
 from redis.asyncio import Redis
 
 from app.exceptions import FileNotFoundOnSandbox, SessionNotActive
@@ -106,7 +107,7 @@ class AgentLoopClient:
                 "installation_token": installation_token,
                 "message": initial_message,
             },
-            headers={"X-Internal-Secret": self._secret},
+            headers={"X-Internal-Secret": self._secret, **correlation_headers()},
         )
         response.raise_for_status()
 
@@ -135,7 +136,7 @@ class AgentLoopClient:
         response = await self._http.post(
             f"{base_url}/internal/sessions/{session_id}/messages",
             json={"text": text},
-            headers={"X-Internal-Secret": self._secret},
+            headers={"X-Internal-Secret": self._secret, **correlation_headers()},
         )
         response.raise_for_status()
 
@@ -152,7 +153,7 @@ class AgentLoopClient:
         response = await self._http.post(
             f"{base_url}/internal/sessions/{session_id}/resume",
             json={"text": text},
-            headers={"X-Internal-Secret": self._secret},
+            headers={"X-Internal-Secret": self._secret, **correlation_headers()},
         )
         response.raise_for_status()
 
@@ -167,7 +168,7 @@ class AgentLoopClient:
     async def list_files(self, session_id: uuid.UUID) -> list[str]:
         base_url = await self._owner_base_url(session_id)
         response = await self._http.get(
-            f"{base_url}/internal/sessions/{session_id}/files", headers={"X-Internal-Secret": self._secret}
+            f"{base_url}/internal/sessions/{session_id}/files", headers={"X-Internal-Secret": self._secret, **correlation_headers()}
         )
         response.raise_for_status()
         return response.json()["paths"]
@@ -177,7 +178,7 @@ class AgentLoopClient:
         response = await self._http.get(
             f"{base_url}/internal/sessions/{session_id}/files/content",
             params={"path": path},
-            headers={"X-Internal-Secret": self._secret},
+            headers={"X-Internal-Secret": self._secret, **correlation_headers()},
         )
         if response.status_code == 404:
             raise FileNotFoundOnSandbox(path)
@@ -189,7 +190,7 @@ class AgentLoopClient:
         response = await self._http.get(
             f"{base_url}/internal/sessions/{session_id}/files/original",
             params={"path": path},
-            headers={"X-Internal-Secret": self._secret},
+            headers={"X-Internal-Secret": self._secret, **correlation_headers()},
         )
         response.raise_for_status()
         return response.json()["content"]
@@ -199,7 +200,7 @@ class AgentLoopClient:
         response = await self._http.get(
             f"{base_url}/internal/sessions/{session_id}/files/diff",
             params={"path": path},
-            headers={"X-Internal-Secret": self._secret},
+            headers={"X-Internal-Secret": self._secret, **correlation_headers()},
         )
         response.raise_for_status()
         return response.json()["diff"]
@@ -207,7 +208,7 @@ class AgentLoopClient:
     async def cumulative_diff(self, session_id: uuid.UUID) -> str:
         base_url = await self._owner_base_url(session_id)
         response = await self._http.get(
-            f"{base_url}/internal/sessions/{session_id}/diff", headers={"X-Internal-Secret": self._secret}
+            f"{base_url}/internal/sessions/{session_id}/diff", headers={"X-Internal-Secret": self._secret, **correlation_headers()}
         )
         response.raise_for_status()
         return response.json()["diff"]

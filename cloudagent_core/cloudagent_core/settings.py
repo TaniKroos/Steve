@@ -55,3 +55,12 @@ class CoreSettings(BaseSettings):
     # this lets the key be mounted as a secret *file* in production rather
     # than stuffed whole into an env var.
     github_app_private_key_path: str
+
+    # --- Axiom (structured logs + errors, both services) ---
+    # Ingest-scoped API token -- see cloudagent_core.logging.configure_logging.
+    # `None` (unset) means "don't ship to Axiom," used as-is by local dev
+    # runs that haven't set it -- stdout logging still works either way.
+    axiom_token: str | None = None
+    # One shared dataset for both services, not split per-service, so a
+    # single correlation_id query returns backend + agent_loop lines together.
+    axiom_dataset: str = "cloudagent"
